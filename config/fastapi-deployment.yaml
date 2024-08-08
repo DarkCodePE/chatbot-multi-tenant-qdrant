@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fastapi-chatbot
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: fastapi-chatbot
+  template:
+    metadata:
+      labels:
+        app: fastapi-chatbot
+    spec:
+      containers:
+      - name: fastapi-chatbot
+        image: your-docker-registry/fastapi-chatbot:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: QDRANT_URL
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: QDRANT_URL
+        - name: QDRANT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: QDRANT_API_KEY
+        - name: COLLECTION_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: chatbot-config
+              key: COLLECTION_NAME
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: OPENAI_API_KEY
