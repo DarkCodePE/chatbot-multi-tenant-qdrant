@@ -14,10 +14,52 @@ spec:
     spec:
       containers:
       - name: fastapi-chatbot
-        image: your-docker-registry/fastapi-chatbot:latest
+        image: orlandogtp/fastapi-chatbot:latest
+        command: ["uvicorn"]
+        args: ["app.main:app", "--host", "0.0.0.0", "--port", "8000"]
         ports:
         - containerPort: 8000
         env:
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: OPENAI_API_KEY
+        - name: TAVILY_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: TAVILY_API_KEY
+        - name: CONFIG_FILE
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: CONFIG_FILE
+        - name: DOC_PATH
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: DOC_PATH
+        - name: LANGCHAIN_PROJECT
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: LANGCHAIN_PROJECT
+        - name: LANGCHAIN_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: LANGCHAIN_API_KEY
+        - name: LANGCHAIN_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: LANGCHAIN_ENDPOINT
+        - name: LANGCHAIN_TRACING_V2
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: LANGCHAIN_TRACING_V2
         - name: QDRANT_URL
           valueFrom:
             secretKeyRef:
@@ -30,11 +72,11 @@ spec:
               key: QDRANT_API_KEY
         - name: COLLECTION_NAME
           valueFrom:
-            configMapKeyRef:
-              name: chatbot-config
+            secretKeyRef:
+              name: chatbot-secrets
               key: COLLECTION_NAME
-        - name: OPENAI_API_KEY
+        - name: NEXT_PUBLIC_API_URL
           valueFrom:
             secretKeyRef:
               name: chatbot-secrets
-              key: OPENAI_API_KEY
+              key: NEXT_PUBLIC_API_URL

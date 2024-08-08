@@ -49,6 +49,9 @@ app.add_middleware(
 @lru_cache(maxsize=100)
 def get_cached_response(question: str, group_id: str):
     return question, group_id
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
 
 @app.post("/ask")
 async def ask_question(question: Question):

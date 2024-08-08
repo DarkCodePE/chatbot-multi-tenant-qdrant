@@ -2,11 +2,13 @@ apiVersion: v1
 kind: Service
 metadata:
   name: fastapi-chatbot-service
+  labels:
+    app: fastapi-chatbot
 spec:
+  type: NodePort
+  ports:
+    - port: 8000
+      targetPort: 8000
+      nodePort: 30007
   selector:
     app: fastapi-chatbot
-  ports:
-    - protocol: TCP
-      port: 80
-      targetPort: 8000
-  type: NodePort
