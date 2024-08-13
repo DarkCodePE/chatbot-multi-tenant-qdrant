@@ -75,8 +75,3 @@ spec:
             secretKeyRef:
               name: chatbot-secrets
               key: COLLECTION_NAME
-        - name: NEXT_PUBLIC_API_URL
-          valueFrom:
-            secretKeyRef:
-              name: chatbot-secrets
-              key: NEXT_PUBLIC_API_URL

@@ -5,10 +5,9 @@ metadata:
   labels:
     app: fastapi-chatbot
 spec:
-  type: NodePort
+  type: ClusterIP
   ports:
     - port: 8000
       targetPort: 8000
-      nodePort: 30007
   selector:
     app: fastapi-chatbot

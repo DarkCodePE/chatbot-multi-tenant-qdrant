@@ -14,6 +14,11 @@ from qdrant_client.http import models as rest
 from qdrant_client.http.exceptions import UnexpectedResponse
 import logging
 from dotenv import load_dotenv
+from langchain.memory import ConversationBufferMemory
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.runnables import RunnablePassthrough, RunnableWithMessageHistory
+from app.historial import QdrantChatMessageHistory
 
 # Configuration
 load_dotenv()
@@ -23,15 +28,18 @@ logging.basicConfig(level=logging.DEBUG,
 QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME")
-
+CHAT_HISTORY_COLLECTION =  os.getenv("CHAT_HISTORY_COLLECTION")
 DOCS_FOLDER = Path("documents")
-
+def get_session_history(session_id: str) -> QdrantChatMessageHistory:
+    qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+    return QdrantChatMessageHistory(session_id, qdrant_client, CHAT_HISTORY_COLLECTION)
 class RAG:
     def __init__(self):
         self.qdrant = None
         self.embeddings = None
-        self.openai_client = AsyncOpenAI()
-
+        self.qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+        self.chain = None
+        self.chain_with_history = None
     async def initialize(self):
         self.embeddings = OpenAIEmbeddings()
         self.qdrant = await self.initialize_qdrant()
@@ -134,73 +142,74 @@ class RAG:
 
     @traceable(run_type="retriever")
     async def retriever(self, query: str, group_id: str):
-        results = self.qdrant.similarity_search(
+        logging.info(f"Recuperando documentos relevantes para la consulta: {query}")
+        results = await asyncio.to_thread(
+            self.qdrant.similarity_search,
             query,
             k=5,
             filter=models.Filter(
                 must=[models.FieldCondition(key="group_id", match=models.MatchValue(value=group_id))]
             )
         )
-
-        print(f"Resultados para group_id: {group_id}")
-        for doc in results:
-            print(f"Content: {doc.page_content[:100]}...")
-            print(f"Metadata: {doc.metadata}")
-            print("---")
-
         return results
-
     @traceable(metadata={"model": "gpt-4o-mini"})
-    async def rag(self, question: str, group_id: str):
-        docs = await self.retriever(question, group_id)
-        context = "\n".join(doc.page_content for doc in docs)
-        system_message = f"""Responde a la pregunta del usuario utilizando solo la información proporcionada a continuación:
+    async def rag(self, question: str, session_id: str, group_id: str):
+        logging.info(f"Iniciando proceso RAG para la pregunta: {question}")
+        try:
+            # Recuperar documentos relacionados con la consulta
+            docs = await self.retriever(question, group_id)
+            logging.info(f"Documentos recuperadosxxx: {docs}")
+            context = "\n".join(doc.page_content for doc in docs)
 
-        {context}"""
+            # Crear el prompt con contexto de documentos y utilizar RunnableWithMessageHistory
+            prompt = ChatPromptTemplate.from_messages([
+                ("system",
+                 "Responde a la pregunta del usuario utilizando solo la información proporcionada a continuación:\n\n{context}"),
+                MessagesPlaceholder(variable_name="history"),
+                ("human", "{input}")
+            ])
 
-        response = await self.openai_client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": question},
-            ],
-            model="gpt-4o-mini",
-        )
+            # Crear el modelo de lenguaje
+            llm = ChatOpenAI(model_name="gpt-4o-mini")
+            document_chain = create_stuff_documents_chain(llm, prompt)
+
+            # Envolver con RunnableWithMessageHistory
+            chain_with_history = RunnableWithMessageHistory(
+                document_chain,
+                get_session_history=get_session_history,
+                input_messages_key="input",
+                history_messages_key="history",
+            )
+
+            # Asegúrate de usar `await` al invocar el `chain_with_history`
+            response = chain_with_history.invoke(
+                {
+                    "input": question,
+                    "context": docs,
+                },
+                config={"configurable": {"session_id": session_id}}  # Pasar el session_id aquí
+            )
+            return response
+        except Exception as e:
+            logging.error(f"Error durante la invocación de chain_with_history: {e}", exc_info=True)
+            raise
+
+    async def chatbot(self, question: str, session_id: str, group_id: str):
+        response = await self.rag(question, session_id, group_id)
         return response
-
-    async def chatbot(self, question: str, group_id: str):
-        run_id = str(uuid4())
-        response = await self.rag(question, group_id, langsmith_extra={"run_id": run_id})
-        if response.choices and len(response.choices) > 0:
-            return response.choices[0].message.content, run_id
-        else:
-            raise ValueError("No se recibió una respuesta válida del modelo de lenguaje")
-
-async def verify_documents(qdrant_client, collection_name):
-    response = await qdrant_client.scroll(
-        collection_name=collection_name,
-        limit=10,
-        with_payload=True,
-        with_vectors=False
-    )
-
-    for point in response[0]:
-        print(f"ID: {point.id}")
-        print(f"Payload: {point.payload}")
-        print("---")
 
 async def main():
     rag_instance = RAG()
     await rag_instance.initialize()
-    print("RAG system initialized. You can now use rag_instance.chatbot(question, group_id) to interact with the system.")
+    print(
+        "Sistema RAG inicializado. Puede usar rag_instance.chatbot(question, session_id, group_id) para interactuar con el sistema.")
 
-    question = "What are Telefónica's AI principles?"
+    question = "¿Cuáles son los principios de IA de Telefónica?"
+    session_id = str(uuid4())  # Genera un ID de sesión único
     group_id = "user_group_1"
-    response, run_id = await rag_instance.chatbot(question, group_id)
-    print(f"Question: {question}")
-    print(f"Response: {response}")
-    print(f"Run ID: {run_id}")
-
-    await verify_documents(rag_instance.qdrant.client, COLLECTION_NAME)
+    response = await rag_instance.chatbot(question, session_id, group_id)
+    print(f"Pregunta: {question}")
+    print(f"Respuesta: {response}")
 
 if __name__ == "__main__":
     asyncio.run(main())
