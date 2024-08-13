@@ -1,6 +1,7 @@
 # .gitignore
 .env
 .env.local
+config/chatbot-secrets.yaml
 node_modules/
 __pycache__/
 *.pyc
