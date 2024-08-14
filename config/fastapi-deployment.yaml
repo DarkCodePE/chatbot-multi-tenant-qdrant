@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
       - name: fastapi-chatbot
-        image: orlandogtp/fastapi-chatbot:latest
+        image: orlandogtp/fastapi-chatbot:v1.0.3
         command: ["uvicorn"]
         args: ["app.main:app", "--host", "0.0.0.0", "--port", "8000"]
         ports:
@@ -75,3 +75,22 @@ spec:
             secretKeyRef:
               name: chatbot-secrets
               key: COLLECTION_NAME
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: DB_PASSWORD
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: DB_NAME
+        - name: DB_HOST
+          value: "postgresql"  # o el nombre de tu servicio de base de datos
+        - name: DB_PORT
+          value: "5432"

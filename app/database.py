@@ -12,11 +12,11 @@ from app.model import User
 # Configuration
 load_dotenv()
 
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
-POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
-POSTGRES_DB = os.getenv("POSTGRES_DB")
-POSTGRES_USER = os.getenv("POSTGRES_USER")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
+POSTGRES_HOST = os.getenv("DB_HOST", "postgresql")
+POSTGRES_PORT = os.getenv("DB_PORT", "5432")
+POSTGRES_DB = os.getenv("DB_NAME")
+POSTGRES_USER = os.getenv("DB_USER")
+POSTGRES_PASSWORD = os.getenv("DB_PASSWORD")
 # URL de la base de datos
 SQLALCHEMY_DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 print(SQLALCHEMY_DATABASE_URL)
