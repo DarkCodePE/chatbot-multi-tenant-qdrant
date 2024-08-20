@@ -10,5 +10,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copiar el contenido de tu aplicación al contenedor
 COPY . .
 
+# Copiar el archivo de credenciales de Google
+COPY ./config/google-credentials.json /app/config/google-credentials.json
+
+# Establecer la variable de entorno para las credenciales de Google
+ENV GOOGLE_APPLICATION_CREDENTIALS=/app/config/google-credentials.json
+
 # Comando para ejecutar la aplicación
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

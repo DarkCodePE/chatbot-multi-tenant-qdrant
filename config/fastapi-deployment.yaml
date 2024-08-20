@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: fastapi-chatbot
 spec:
-  replicas: 3
+  replicas: 1
   selector:
     matchLabels:
       app: fastapi-chatbot
@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
       - name: fastapi-chatbot
-        image: orlandogtp/fastapi-chatbot:v1.0.3
+        image: orlandogtp/fastapi-chatbot:latest
         command: ["uvicorn"]
         args: ["app.main:app", "--host", "0.0.0.0", "--port", "8000"]
         ports:

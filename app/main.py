@@ -1,53 +1,18 @@
-from uuid import uuid4
-import random
-from fastapi import FastAPI, HTTPException, Depends
-from pydantic import BaseModel
+from http.client import HTTPException
+from typing import List
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-
 from app.database import Database
-from app.rag import RAG
-from langsmith import Client
 import logging
-import time
-from functools import lru_cache
-import asyncio
-
 from sqlalchemy.orm import Session
-from app.model import User as UserModel
 from app.database import init_db
+from app.schema.schema import UserResponse, CourseResponse, TopicResponse, DocumentCreate, CourseCreate, UserLogin, \
+    TopicCreate, CourseAssignment, QuestionV2, Feedback, DocumentAddToTopic, ChatSessionStart, ChatSessionEnd
+from app.services.services import UserService, CourseService, TopicService, QuestionService
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-class UserResponse(BaseModel):
-    id: str
-    name: str
-    group_id: str
-    session_id: str
-# Modelos Pydantic
-class Question(BaseModel):
-    text: str
-    user_id: str
-
-class Feedback(BaseModel):
-    run_id: str
-    score: float
-
-# Singleton para RAG
-class RAGSingleton:
-    _instance = None
-    _lock = asyncio.Lock()
-
-    @classmethod
-    async def get_instance(cls):
-        async with cls._lock:
-            if cls._instance is None:
-                cls._instance = RAG()
-                await cls._instance.initialize()
-            return cls._instance
-
-# Inicializa la base de datos (crea las tablas si no existen)
-init_db()
 # Inicialización de FastAPI
 app = FastAPI()
 database = Database()
@@ -61,75 +26,85 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class UserCreate(BaseModel):
-    name: str
-    group_id: str
+# Inicializa la base de datos
+init_db()
+
+# Servicios
+user_service = UserService(database)
+course_service = CourseService(database)
+topic_service = TopicService(database)
+question_service = QuestionService(database)
+
+# Rutas de la API
 
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
 
-@app.post("/users", response_model=UserResponse)
-def create_user(user: UserCreate, db: Session = Depends(database.get_db)):
-    db_user = UserModel(
-        id=str(uuid4()),
-        name=user.name,
-        group_id=user.group_id,
-        session_id=str(uuid4())
-    )
-    return database.create_user(db, db_user)
+@app.post("/users/login", response_model=UserResponse)
+async def user_login(user: UserLogin, db: Session = Depends(database.get_db)):
+    return await user_service.login_user(user, db)
+
+@app.post("/courses", response_model=CourseResponse)
+async def create_course(course: CourseCreate, db: Session = Depends(database.get_db)):
+    return await course_service.create_course(course, db)
+
+@app.get("/courses", response_model=List[CourseResponse])
+def get_courses(db: Session = Depends(database.get_db)):
+    return course_service.get_all_courses(db)
+
+@app.post("/topics", response_model=TopicResponse)
+async def create_topic(topic: TopicCreate, db: Session = Depends(database.get_db)):
+    return await topic_service.create_topic(topic, db)
 
 @app.get("/users/{user_id}", response_model=UserResponse)
 def read_user(user_id: str, db: Session = Depends(database.get_db)):
-    db_user = database.get_user_by_id(db, user_id)
-    if db_user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    return db_user
+    return user_service.get_user(user_id, db)
 
-@app.post("/ask")
-async def ask_question(question: Question, db: Session = Depends(database.get_db)):
-    start_time = time.time()
-    try:
-        logging.info(f"Received question: {question.text[:50]}...")
+@app.post("/users/{user_id}/documents")
+async def add_user_document(user_id: str, document: DocumentCreate, db: Session = Depends(database.get_db)):
+    return await user_service.add_user_document(user_id, document, db)
 
-        # Verificar si el usuario existe
-        db_user = database.get_user_by_id(db, question.user_id)
-        if db_user is None:
-            raise HTTPException(status_code=404, detail="User not found")
-        logging.info(f"User found ->: {db_user}")
+@app.get("/users/{user_id}/courses", response_model=List[CourseResponse])
+def get_user_courses(user_id: str, db: Session = Depends(database.get_db)):
+    return user_service.get_user_courses(user_id, db)
 
-        # Obtener la instancia de RAG y llamar al método chatbot
-        rag_instance = await RAGSingleton.get_instance()
-        response = await rag_instance.chatbot(
-            question.text,
-            db_user.session_id,
-            db_user.group_id
-        )
+@app.post("/courses/{course_id}/topics/{topic_id}")
+async def assign_topic_to_course(course_id: str, topic_id: str, db: Session = Depends(database.get_db)):
+    return await course_service.assign_topic_to_course(course_id, topic_id, db)
 
-        total_time = time.time() - start_time
-        logging.info(f"Total processing time: {total_time:.2f} seconds")
+@app.post("/users/assign-course")
+def assign_course_to_user(assignment: CourseAssignment, db: Session = Depends(database.get_db)):
+    return user_service.assign_course_to_user(assignment, db)
 
-        return {
-            "response": response,
-            "user": db_user
-        }
-    except Exception as e:
-        logging.error(f"Error occurred: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/topics/{topic_id}/documents")
+async def add_document_to_topic(topic_id: str, document: DocumentAddToTopic, db: Session = Depends(database.get_db)):
+    document.topic_id = topic_id
+    return await topic_service.add_document_to_topic(document, db)
+
+# Nuevos endpoints para manejar sesiones de chat
+
+@app.post("/chat/start")
+async def start_chat_session(session_start: ChatSessionStart, db: Session = Depends(database.get_db)):
+    return await question_service.start_chat_session(session_start, db)
+
+@app.post("/chat/question")
+async def process_question(question: QuestionV2, db: Session = Depends(database.get_db)):
+    return await question_service.process_question(question, db)
+
+@app.post("/chat/end")
+async def end_chat_session(chat_end: ChatSessionEnd, db: Session = Depends(database.get_db)):
+    return await question_service.end_chat_session(chat_end.chat_session_id, db)
 
 @app.post("/feedback")
-async def submit_feedback(feedback: Feedback):
+async def submit_feedback(feedback: Feedback, db: Session = Depends(database.get_db)):
+    return await question_service.submit_feedback(feedback, db)
+@app.post("/process-google-drive")
+async def process_google_drive(folder_name: str, course_id: str, topic_id: str, db: Session = Depends(database.get_db)):
     try:
-        ls_client = Client()
-        ls_client.create_feedback(
-            feedback.run_id,
-            key="user-score",
-            score=feedback.score
-        )
-        logging.info(f"Feedback received for run_id: {feedback.run_id}")
-        return {"message": "Feedback recibido con éxito"}
+        result = await topic_service.process_google_drive_documents(folder_name, course_id, topic_id, db)
+        return {"message": "Procesamiento de carpeta de Google Drive completado", "result": result}
     except Exception as e:
-        logging.error(f"Error submitting feedback: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

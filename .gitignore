@@ -1,6 +1,6 @@
 # .gitignore
+.env.prod
 .env
-.env.local
 config/chatbot-secrets.yaml
 node_modules/
 __pycache__/
