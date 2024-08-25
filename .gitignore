@@ -1,7 +1,9 @@
 # .gitignore
+#google-credentials.json
 .env.prod
 .env
 config/chatbot-secrets.yaml
+config/google-credentials.json
 node_modules/
 __pycache__/
 *.pyc

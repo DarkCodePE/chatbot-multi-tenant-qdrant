@@ -31,10 +31,10 @@ class QdrantChatMessageHistory(BaseChatMessageHistory):
     def configure_collection(self):
         try:
             self.client.get_collection(self.collection_name)
-            logging.info(f"La colección {self.collection_name} ya existe.")
+            #logging.info(f"La colección {self.collection_name} ya existe.")
         except UnexpectedResponse as e:
             if e.status_code == 404:
-                logging.info(f"La colección {self.collection_name} no existe. Creándola...")
+                #logging.info(f"La colección {self.collection_name} no existe. Creándola...")
                 self.client.create_collection(
                     collection_name=self.collection_name,
                     vectors_config=models.VectorParams(size=1536, distance=models.Distance.COSINE),

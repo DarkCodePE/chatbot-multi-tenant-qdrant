@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from langchain.schema import Document
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
+from app.collections import TopicRepository
 from app.rag import RAG, TopicInfo
 import logging
 import asyncio
@@ -16,8 +17,7 @@ from app.schema.schema import UserLogin, UserResponse, DocumentCreate, CourseAss
     TopicCreate, TopicResponse, Question, Feedback, QuestionV2, DocumentAddToTopic, ChatSessionStart
 from sqlalchemy.orm import Session
 from app.model import User as UserModel
-from langsmith import traceable
-
+from langchain_core.vectorstores import VectorStoreRetriever
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains import create_history_aware_retriever, create_retrieval_chain
@@ -88,14 +88,14 @@ class UserService:
             db.commit()
 
         user_courses = [course.name for course in db_user.courses]
-        course_collections = [course.collection_name for course in db_user.courses]
+        #course_collections = [course.collection_name for course in db_user.courses]
 
         return UserResponse(
             id=db_user.id,
             name=db_user.name,
             session_id=db_user.session_id,
             courses=user_courses,
-            course_collections=course_collections
+            #course_collections=course_collections
         )
 
     def get_user(self, user_id: str, db: Session):
@@ -331,6 +331,7 @@ class QuestionService:
             collection_name=TOPIC_COLLECTION,
             embedding=self.embeddings
         )
+        self.topic_repository = TopicRepository(self.qdrant_client, self.embeddings)
 
     @traceable(run_type="chain")
     async def process_question(self, question: QuestionV2, db: Session):
@@ -339,17 +340,11 @@ class QuestionService:
             if not chat_session:
                 raise HTTPException(status_code=404, detail="Chat session not found")
 
-            # Obtener documentos relevantes
-            relevant_docs = await self.get_relevant_documents(question.text, chat_session, db)
-            print(relevant_docs)
-            logging.info(f"Documentos relevantes encontrados: {len(relevant_docs)}")
-            # Generar respuesta
-            # Generar respuesta
-            try:
-                response = await self.generate_response(question.text, chat_session)
-            except Exception as e:
-                logging.error(f"Error durante la generación de respuesta: {e}", exc_info=True)
-                raise HTTPException(status_code=500, detail=f"Error durante la generación de respuesta: {str(e)}")
+            # Crear un retriever específico para este curso y tema
+            retriever = self.create_filtered_retriever(chat_session.course_id, chat_session.topic_id)
+
+            # Generar respuesta usando el retriever
+            response = await self.generate_response(question.text, chat_session, retriever)
 
             # Guardar la pregunta en la base de datos
             db_question = QuestionModel(
@@ -374,68 +369,23 @@ class QuestionService:
             logging.error(f"Error processing question: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    async def get_relevant_documents(self, question: str, chat_session: ChatSession, db: Session) -> List[Document]:
-        try:
-            rag_instance = await RAGSingleton.get_instance()
+    def create_filtered_retriever(self, course_id: str, topic_id: str) -> VectorStoreRetriever:
+        filter_condition = {"must": [{"key": "type", "match": {"value": "document"}}]}
 
-            course_id = chat_session.course_id
-            topic_id = chat_session.topic_id
+        if course_id:
+            filter_condition["must"].append({"key": "course_id", "match": {"value": course_id}})
+        if topic_id:
+            filter_condition["must"].append({"key": "topic_id", "match": {"value": topic_id}})
 
-            await self.sync_documents(course_id, topic_id, db)
+        return self.vector_store.as_retriever(
+            search_type="similarity",
+            search_kwargs={
+                "k": 5,
+                "filter": filter_condition
+            }
+        )
 
-            query_vector = await rag_instance.embeddings.aembed_query(question)
-
-            filter_conditions = models.Filter(
-                must=[
-                    models.FieldCondition(key="type", match=models.MatchValue(value="document"))
-                ]
-            )
-
-            if course_id:
-                filter_conditions.must.append(
-                    models.FieldCondition(key="course_id", match=models.MatchValue(value=course_id)))
-            if topic_id:
-                filter_conditions.must.append(
-                    models.FieldCondition(key="topic_id", match=models.MatchValue(value=topic_id)))
-
-            collection_name = getattr(rag_instance, 'collection_name', COLLECTION_NAME)
-            if not collection_name:
-                raise ValueError("No se ha definido el nombre de la colección")
-
-            search_results = rag_instance.qdrant_client.search(
-                collection_name=collection_name,
-                query_vector=query_vector,
-                query_filter=filter_conditions,
-                limit=5
-            )
-
-            relevant_docs = []
-            for result in search_results:
-                logging.info("ResultXXXXX: " + str(result))
-                content = result.payload.get("content")
-                if content is None:
-                    logging.warning(f"Documento sin contenido encontrado: {result.id}")
-                    continue
-
-                doc = Document(
-                    page_content=content,
-                    metadata={
-                        **result.payload.get("metadata", {}),
-                        "course_id": result.payload.get("course_id"),
-                        "topic_id": result.payload.get("topic_id"),
-                        "score": result.score
-                    }
-                )
-                relevant_docs.append(doc)
-
-            logging.info(f"Documentos relevantes encontrados: {len(relevant_docs)}")
-            return relevant_docs
-
-        except Exception as e:
-            logging.error(f"Error al obtener documentos relevantes: {str(e)}")
-            return []
-
-    async def sync_documents(self, course_id: str, topic_id: str, db: Session):
+    async def sync_documents(self, course_id: str, topic_id: str):
         try:
             rag_instance = await RAGSingleton.get_instance()
 
@@ -452,15 +402,9 @@ class QuestionService:
             logging.error(f"Error al sincronizar documentos: {str(e)}")
 
     @traceable(metadata={"model": "gpt-4o-mini"})
-    async def generate_response(self, question: str, chat_session: ChatSession):
+    async def generate_response(self, question: str, chat_session: ChatSession, retriever: VectorStoreRetriever):
         try:
             logging.info(f"Generando respuesta para la pregunta: {question}")
-
-            # Crear el retriever de Qdrant
-            base_retriever = self.vector_store.as_retriever(
-                search_type="similarity",
-                search_kwargs={"k": 5}
-            )
 
             # Crear el prompt para contextualizar la pregunta
             contextualize_q_prompt = ChatPromptTemplate.from_messages([
@@ -476,7 +420,7 @@ class QuestionService:
             # Crear un retriever consciente del historial
             history_aware_retriever = create_history_aware_retriever(
                 self.llm,
-                base_retriever,
+                retriever,
                 contextualize_q_prompt
             )
 
@@ -529,6 +473,10 @@ class QuestionService:
             course_id=session_start.course_id,
             topic_id=session_start.topic_id
         )
+
+        # Sincronizar documentos al inicio de la sesión
+        await self.sync_documents(session_start.course_id, session_start.topic_id)
+
         return {"chat_session_id": chat_session.id}
 
     async def end_chat_session(self, chat_session_id: str, db: Session):
