@@ -235,23 +235,52 @@ class TopicRepository:
             for file in files:
                 try:
                     file_id = file['id']
+                    file_name = file.get('name', 'Unknown')
+                    file_mime = file.get('mimeType', 'Unknown')
+                    logging.info(f"Procesando archivo: {file_name} (ID: {file_id}, MIME: {file_mime})")
+
                     request = self.drive_service.files().get_media(fileId=file_id)
                     file_content = io.BytesIO()
                     downloader = MediaIoBaseDownload(file_content, request)
                     done = False
-                    while not done:
-                        _, done = downloader.next_chunk()
 
-                    if file['mimeType'] == 'application/pdf':
-                        # Procesar PDF
-                        pdf_reader = PdfReader(file_content)
-                        text_content = ""
-                        for page in pdf_reader.pages:
-                            text_content += page.extract_text()
+                    try:
+                        while not done:
+                            status, done = downloader.next_chunk()
+                            if status:
+                                logging.info(f"Descarga {int(status.progress() * 100)}% completa para {file_name}")
+                    except Exception as download_error:
+                        logging.error(f"Error al descargar el archivo {file_name}: {str(download_error)}")
+                        continue
+
+                    logging.info(f"Archivo descargado: {file_name}")
+                    file_content.seek(0)  # Rewind the file pointer to the beginning
+
+                    if file_mime == 'application/pdf':
+                        try:
+                            pdf_reader = PdfReader(file_content)
+                            logging.info(f"PDF {file_name} tiene {len(pdf_reader.pages)} páginas")
+                            text_content = ""
+                            for i, page in enumerate(pdf_reader.pages):
+                                page_text = page.extract_text()
+                                logging.info(
+                                    f"Página {i + 1} de {file_name}: primeros 100 caracteres: {page_text[:100]}")
+                                text_content += page_text
+                        except Exception as pdf_error:
+                            logging.error(f"Error al procesar el PDF {file_name}: {str(pdf_error)}")
+                            continue
                     else:
-                        # Para otros tipos de archivo, intentar decodificar como texto
-                        text_content = file_content.getvalue().decode('utf-8', errors='ignore')
+                        try:
+                            text_content = file_content.getvalue().decode('utf-8', errors='ignore')
+                            logging.info(f"Archivo no-PDF {file_name}: primeros 100 caracteres: {text_content[:100]}")
+                        except Exception as text_error:
+                            logging.error(f"Error al decodificar el archivo {file_name}: {str(text_error)}")
+                            continue
 
+                    # Limitar el contenido si es demasiado largo
+                    max_content_length = 10000  # Ajusta este valor según sea necesario
+                    if len(text_content) > max_content_length:
+                        text_content = text_content[:max_content_length]
                     # Crear embedding y almacenar en Qdrant
                     vector = await self.embeddings.aembed_query(text_content)
 
@@ -276,7 +305,7 @@ class TopicRepository:
                     )
                     processed_files += 1
                     logging.info(f"Procesado archivo {processed_files}/{total_files}: {file.get('name')}")
-
+                    logging.info(f"text_contentxxx: {text_content[:100]}")
                 except Exception as e:
                     logging.error(f"Error al procesar archivo {file.get('name')}: {str(e)}")
 

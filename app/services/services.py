@@ -1,11 +1,12 @@
 # app/services.py
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Any
 from uuid import uuid4
 from fastapi import HTTPException
 from langchain.schema import Document
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from pydantic import Field
 
 from app.collections import TopicRepository
 from app.rag import RAG, TopicInfo
@@ -13,6 +14,8 @@ import logging
 import asyncio
 from app.model import User as UserModel, Course as CourseModel, Topic as TopicModel, Question as QuestionModel, \
     ChatSession, Document as DocumentModel, Course
+from app.retriever.custom_qdrant_retriever import CustomQdrantRetriever, CustomQdrantRetrieverConfig
+from app.retriever.document_list_retriever import DocumentListRetriever
 from app.schema.schema import UserLogin, UserResponse, DocumentCreate, CourseAssignment, CourseCreate, CourseResponse, \
     TopicCreate, TopicResponse, Question, Feedback, QuestionV2, DocumentAddToTopic, ChatSessionStart
 from sqlalchemy.orm import Session
@@ -31,6 +34,10 @@ from dotenv import load_dotenv
 from langsmith.wrappers import wrap_openai
 import openai
 from summa import keywords
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.documents import Document
+from langchain_core.retrievers import BaseRetriever
+from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 
 load_dotenv()
 logging.basicConfig(level=logging.DEBUG,
@@ -340,6 +347,13 @@ class QuestionService:
         )
         self.topic_repository = TopicRepository(self.qdrant_client, self.embeddings)
         self.topic_service = TopicService(database)
+        retriever_config = CustomQdrantRetrieverConfig(
+            client=self.qdrant_client,
+            collection_name=TOPIC_COLLECTION,
+            embeddings=self.embeddings,
+            k=5
+        )
+        self.retriever = CustomQdrantRetriever(config=retriever_config)
 
     @traceable(run_type="chain")
     async def process_question(self, question: QuestionV2, db: Session):
@@ -349,10 +363,45 @@ class QuestionService:
                 raise HTTPException(status_code=404, detail="Chat session not found")
 
             # Crear un retriever específico para este curso y tema
-            retriever = self.create_filtered_retriever(chat_session.course_id, chat_session.topic_id)
+            #relevant_docs = self.retriever.get_relevant_documents(chat_session.course_id, chat_session.topic_id)
+            relevant_docs = await self.retriever.ainvoke(question.text)
+            logging.info(f"Retrieved {len(relevant_docs)} relevant documents")
+            for doc in relevant_docs:
+                logging.info(
+                    f"Document ID: {doc.metadata['id']}, Score: {doc.metadata['score']}, Content preview: {doc.page_content[:100]}...")
+            # Crear un DocumentListRetriever con los documentos relevantes
+            document_list_retriever = DocumentListRetriever(relevant_docs)
 
-            # Generar respuesta usando el retriever
-            response = await self.generate_response(question.text, chat_session, retriever)
+
+            # Búsqueda con el retriever personalizado
+            # custom_results = await retriever.aget_relevant_documents(question.text)
+            # logging.info(f"Custom retriever results: {custom_results}")
+
+            # Búsqueda directa con Qdrant
+            # qdrant_results = self.qdrant_client.search(
+            #     collection_name=TOPIC_COLLECTION,
+            #     query_vector=self.embeddings.embed_query(question.text),
+            #     query_filter=models.Filter(
+            #         must=[
+            #             models.FieldCondition(key="type", match=models.MatchValue(value="document")),
+            #             models.FieldCondition(key="course_id", match=models.MatchValue(value=chat_session.course_id)),
+            #             models.FieldCondition(key="topic_id", match=models.MatchValue(value=chat_session.topic_id))
+            #         ]
+            #     ),
+            #     limit=5
+            # )
+            # logging.info(f"Qdrant search results: {qdrant_results}")
+
+            # Comparar resultados
+            # custom_ids = set(doc.metadata.get('id') for doc in custom_results)
+            # qdrant_ids = set(result.id for result in qdrant_results)
+            # common_ids = custom_ids.intersection(qdrant_ids)
+            # logging.info(f"Common document IDs: {common_ids}")
+            # logging.info(f"Documents only in custom results: {custom_ids - qdrant_ids}")
+            # logging.info(f"Documents only in Qdrant results: {qdrant_ids - custom_ids}")
+
+            # Usar los resultados del retriever personalizado para generar la respuesta
+            response = await self.generate_response(question.text, chat_session, document_list_retriever)
 
             # Guardar la pregunta en la base de datos
             db_question = QuestionModel(
@@ -377,6 +426,7 @@ class QuestionService:
             logging.error(f"Error processing question: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
 
+    @traceable(run_type="retriever")
     def create_filtered_retriever(self, course_id: str, topic_id: str) -> VectorStoreRetriever:
         filter_condition = {"must": [{"key": "type", "match": {"value": "document"}}]}
 
@@ -389,7 +439,7 @@ class QuestionService:
             search_type="similarity",
             search_kwargs={
                 "k": 5,
-                "filter": filter_condition
+                "filter": filter_condition,
             }
         )
 
@@ -410,7 +460,7 @@ class QuestionService:
             logging.error(f"Error al sincronizar documentos: {str(e)}")
 
     @traceable(metadata={"model": "gpt-4o-mini"})
-    async def generate_response(self, question: str, chat_session: ChatSession, retriever: VectorStoreRetriever):
+    async def generate_response(self, question: str, chat_session: ChatSession, retriever: BaseRetriever):
         try:
             logging.info(f"Generando respuesta para la pregunta: {question}")
 
@@ -463,8 +513,17 @@ class QuestionService:
                 {"input": question},
                 config={"configurable": {"session_id": chat_session.id}}
             )
+            # Obtener los documentos recuperados
+            retrieved_docs = response.get('context', [])
 
-            logging.info(f"Respuesta generada: {response}")
+            # Logging de los documentos recuperados
+            for i, doc in enumerate(retrieved_docs):
+                logging.info(f"Documento {i + 1}:")
+                logging.info(f"  Contenido (primeros 100 caracteres): {doc.page_content[:100]}")
+                logging.info(f"  Metadata: {doc.metadata}")
+
+            logging.info(f"Respuesta generada: {response['answer']}")
+
             return response['answer']
         except Exception as e:
             logging.error(f"Error durante la generación de respuesta: {e}", exc_info=True)

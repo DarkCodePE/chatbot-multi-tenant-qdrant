@@ -40,3 +40,4 @@ langsmith
 PyPDF2
 langchain_qdrant
 psycopg2
+summa
