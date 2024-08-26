@@ -30,6 +30,7 @@ from app.historial import QdrantChatMessageHistory
 from dotenv import load_dotenv
 from langsmith.wrappers import wrap_openai
 import openai
+from summa import keywords
 
 load_dotenv()
 logging.basicConfig(level=logging.DEBUG,
@@ -320,6 +321,12 @@ class TopicService:
         ]
 
 
+def generate_topic_title(question: str) -> str:
+    key_phrases = keywords.keywords(question, words=5).split('\n')
+    title = " ".join(key_phrases).title()
+    return title
+
+
 class QuestionService:
     def __init__(self, database):
         self.database = database
@@ -332,6 +339,7 @@ class QuestionService:
             embedding=self.embeddings
         )
         self.topic_repository = TopicRepository(self.qdrant_client, self.embeddings)
+        self.topic_service = TopicService(database)
 
     @traceable(run_type="chain")
     async def process_question(self, question: QuestionV2, db: Session):
@@ -467,17 +475,53 @@ class QuestionService:
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
+        # Generar título del tópico basado en la pregunta inicial
+        topic_title = generate_topic_title(session_start.initial_question)
+
+        # Crear un nuevo tópico
+        new_topic = TopicCreate(
+            name=topic_title,
+            description=session_start.initial_question,
+            course_id=session_start.course_id
+        )
+        created_topic = await self.topic_service.create_topic(new_topic, db)
+
         chat_session = self.database.create_chat_session(
             db,
             user_id=session_start.user_id,
             course_id=session_start.course_id,
-            topic_id=session_start.topic_id
+            topic_id=created_topic.id
         )
 
         # Sincronizar documentos al inicio de la sesión
-        await self.sync_documents(session_start.course_id, session_start.topic_id)
+        await self.sync_documents(session_start.course_id, created_topic.id)
 
-        return {"chat_session_id": chat_session.id}
+        # Procesar la pregunta inicial
+        question = QuestionV2(
+            text=session_start.initial_question,
+            user_id=session_start.user_id,
+            chat_session_id=chat_session.id
+        )
+        answer = await self.process_question(question, db)
+
+        # Guardar la pregunta inicial en la base de datos
+        db_question = QuestionModel(
+            id=str(uuid4()),
+            text=session_start.initial_question,
+            user_id=session_start.user_id,
+            chat_session_id=chat_session.id,
+            course_id=session_start.course_id,
+            topic_id=created_topic.id
+        )
+        db.add(db_question)
+        db.commit()
+
+        return {
+            "chat_session_id": chat_session.id,
+            "topic_id": created_topic.id,
+            "topic_title": topic_title,
+            "initial_answer": answer
+        }
 
     async def end_chat_session(self, chat_session_id: str, db: Session):
         chat_session = self.database.end_chat_session(db, chat_session_id)

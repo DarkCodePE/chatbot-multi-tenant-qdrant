@@ -20,7 +20,7 @@ class UserResponse(BaseModel):
 class ChatSessionStart(BaseModel):
     user_id: str
     course_id: Optional[str] = None
-    topic_id: Optional[str] = None
+    initial_question: Optional[str] = None
 
 
 class ChatSessionEnd(BaseModel):
