@@ -1,4 +1,5 @@
 # app/schema.py
+from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
@@ -100,3 +101,13 @@ class Question(BaseModel):
     user_id: str
     course_id: str
     topic_id: str
+
+class ChatListItem(BaseModel):
+    id: str
+    topic_title: str
+    timestamp: datetime
+
+class ChatListResponse(BaseModel):
+    user_id: str
+    course_id: str
+    chats: List[ChatListItem]

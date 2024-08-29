@@ -13,11 +13,12 @@ from app.rag import RAG, TopicInfo
 import logging
 import asyncio
 from app.model import User as UserModel, Course as CourseModel, Topic as TopicModel, Question as QuestionModel, \
-    ChatSession, Document as DocumentModel, Course
+    ChatSession, Document as DocumentModel, Course, Topic
 from app.retriever.custom_qdrant_retriever import CustomQdrantRetriever, CustomQdrantRetrieverConfig
 from app.retriever.document_list_retriever import DocumentListRetriever
 from app.schema.schema import UserLogin, UserResponse, DocumentCreate, CourseAssignment, CourseCreate, CourseResponse, \
-    TopicCreate, TopicResponse, Question, Feedback, QuestionV2, DocumentAddToTopic, ChatSessionStart
+    TopicCreate, TopicResponse, Question, Feedback, QuestionV2, DocumentAddToTopic, ChatSessionStart, ChatListResponse, \
+    ChatListItem
 from sqlalchemy.orm import Session
 from app.model import User as UserModel
 from langchain_core.vectorstores import VectorStoreRetriever
@@ -372,7 +373,6 @@ class QuestionService:
             # Crear un DocumentListRetriever con los documentos relevantes
             document_list_retriever = DocumentListRetriever(relevant_docs)
 
-
             # Búsqueda con el retriever personalizado
             # custom_results = await retriever.aget_relevant_documents(question.text)
             # logging.info(f"Custom retriever results: {custom_results}")
@@ -409,7 +409,8 @@ class QuestionService:
                 chat_session_id=chat_session.id,
                 user_id=chat_session.user_id,
                 course_id=chat_session.course_id,
-                topic_id=chat_session.topic_id
+                topic_id=chat_session.topic_id,
+                answer=response  # Guardar la respuesta del bot
             )
             db.add(db_question)
             db.commit()
@@ -596,3 +597,46 @@ class QuestionService:
         except Exception as e:
             logging.error(f"Error submitting feedback: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
+
+    def get_chat_list(self, user_id: str, course_id: str, db: Session) -> ChatListResponse:
+        # Obtener todas las sesiones de chat para el usuario y curso
+        logging.info(f"Obteniendo lista de chats para usuario {user_id} y curso {course_id}")
+        chat_sessions = db.query(ChatSession).filter(
+            ChatSession.user_id == user_id,
+            ChatSession.course_id == course_id
+        ).order_by(ChatSession.start_time.desc()).all()
+
+        chat_list_items = []
+        for session in chat_sessions:
+            # Obtener el tópico asociado a la sesión
+            topic = db.query(Topic).filter(Topic.id == session.topic_id).first()
+
+            chat_list_items.append(ChatListItem(
+                id=session.id,
+                topic_title=topic.name if topic else "Unknown Topic",
+                timestamp=session.start_time
+            ))
+
+        return ChatListResponse(
+            user_id=user_id,
+            course_id=course_id,
+            chats=chat_list_items
+        )
+
+    async def get_chat_history(self, chat_id: str, db: Session):
+        logging.info(f"Obteniendo historial de chat para sesión {chat_id}")
+        chat_session = db.query(ChatSession).filter(ChatSession.id == chat_id).first()
+        if not chat_session:
+            raise HTTPException(status_code=404, detail="Chat session not found")
+
+        # Obtener todas las preguntas y respuestas asociadas a esta sesión de chat
+        questions = db.query(QuestionModel).filter(QuestionModel.chat_session_id == chat_id).order_by(
+            QuestionModel.created_at).all()
+
+        history = []
+        for question in questions:
+            history.append({"type": "user", "content": question.text})
+            if question.answer:
+                history.append({"type": "bot", "content": question.answer})
+
+        return history

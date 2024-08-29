@@ -74,6 +74,7 @@ class Question(Base):
 
     id = Column(String, primary_key=True, index=True, default=lambda: str(uuid4()))
     text = Column(String)
+    answer = Column(String)  # Nuevo campo para la respuesta
     user_id = Column(String, ForeignKey('users.id'), index=True)
     course_id = Column(String, ForeignKey('courses.id'), index=True)
     topic_id = Column(String, ForeignKey('topics.id'), index=True)
