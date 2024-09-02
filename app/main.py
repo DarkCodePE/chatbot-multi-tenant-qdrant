@@ -1,7 +1,9 @@
 from http.client import HTTPException
 from typing import List
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import StreamingResponse
+
 from app.database import Database
 import logging
 from sqlalchemy.orm import Session
@@ -9,7 +11,11 @@ from app.database import init_db
 from app.schema.schema import UserResponse, CourseResponse, TopicResponse, DocumentCreate, CourseCreate, UserLogin, \
     TopicCreate, CourseAssignment, QuestionV2, Feedback, DocumentAddToTopic, ChatSessionStart, ChatSessionEnd, \
     ChatListResponse
+from app.model import User as UserModel, Course as CourseModel, Topic as TopicModel, Question as QuestionModel, \
+    ChatSession, Document as DocumentModel, Course, Topic
 from app.services.services import UserService, CourseService, TopicService, QuestionService
+import asyncio
+import json
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -97,9 +103,28 @@ async def add_document_to_topic(topic_id: str, document: DocumentAddToTopic, db:
 
 # Nuevos endpoints para manejar sesiones de chat
 
+@app.get("/sse/topic/{topic_id}")
+async def sse_topic(topic_id: str, db: Session = Depends(database.get_db)):
+    logging.info(f"Conectando a la sala de chat para el tema {topic_id}")
+
+    async def event_generator():
+        last_title = None
+        while True:
+            topic = db.query(TopicModel).filter(TopicModel.id == topic_id).first()
+            logging.info(f"Comprobando si hay cambios en el tema {topic_id}")
+            if topic and topic.name != last_title:
+                last_title = topic.name
+                yield f"data: {json.dumps({'title': topic.name})}\n\n"
+            await asyncio.sleep(1)  # Comprueba cada segundo
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 @app.post("/chat/start")
-async def start_chat_session(session_start: ChatSessionStart, db: Session = Depends(database.get_db)):
-    return await question_service.start_chat_session(session_start, db)
+async def start_chat_session(session_start: ChatSessionStart,
+                             db: Session = Depends(database.get_db)):
+    result = await question_service.start_chat_session(session_start, db)
+    return result
 
 
 @app.post("/chat/question")
@@ -115,15 +140,6 @@ async def end_chat_session(chat_end: ChatSessionEnd, db: Session = Depends(datab
 @app.post("/feedback")
 async def submit_feedback(feedback: Feedback, db: Session = Depends(database.get_db)):
     return await question_service.submit_feedback(feedback, db)
-
-
-@app.post("/process-google-drive")
-async def process_google_drive(folder_name: str, course_id: str, topic_id: str, db: Session = Depends(database.get_db)):
-    try:
-        result = await topic_service.process_google_drive_documents(folder_name, course_id, topic_id, db)
-        return {"message": "Procesamiento de carpeta de Google Drive completado", "result": result}
-    except Exception as e:
-        raise HTTPException(str(e))
 
 
 @app.get("/chats/{user_id}/{course_id}", response_model=ChatListResponse)
@@ -143,6 +159,34 @@ async def get_chat_history(chat_id: str, db: Session = Depends(database.get_db))
     except Exception as e:
         raise HTTPException(str(e))
 
+
+@app.get("/task/{task_id}")
+async def get_task_status(task_id: str):
+    from app.event.tasks import generate_and_update_title
+    task = generate_and_update_title.AsyncResult(task_id)
+    if task.state == 'PENDING':
+        response = {
+            'state': task.state,
+            'status': 'Task is pending...'
+        }
+    elif task.state == 'PROGRESS':
+        response = {
+            'state': task.state,
+            'status': task.info.get('status', '')
+        }
+    elif task.state == 'SUCCESS':
+        response = {
+            'state': task.state,
+            'status': 'Task completed successfully',
+            'result': task.result
+        }
+    else:  # FAILURE or other states
+        response = {
+            'state': task.state,
+            'status': 'Task failed',
+            'error': str(task.info.get('error', 'Unknown error occurred'))
+        }
+    return response
 
 if __name__ == "__main__":
     import uvicorn
