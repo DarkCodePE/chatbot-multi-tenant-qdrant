@@ -40,4 +40,9 @@ langsmith
 PyPDF2
 langchain_qdrant
 psycopg2
-summa
+redis
+rq
+rq-dashboard
+starlette
+scipy
+celery

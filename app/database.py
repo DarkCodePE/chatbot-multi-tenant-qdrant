@@ -180,3 +180,13 @@ class Database:
         db.commit()
         db.refresh(db_question)
         return db_question
+    #update topic
+    def update_topic(self, db: Session, topic_id: str, topic: Topic):
+        db_topic = self.get_topic_by_id(db, topic_id)
+        if db_topic:
+            db_topic.name = topic.name
+            db_topic.course_id = topic.course_id
+            db_topic.description = topic.description
+            db.commit()
+            return db_topic
+        return None

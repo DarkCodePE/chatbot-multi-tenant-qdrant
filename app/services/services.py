@@ -1,10 +1,12 @@
 # app/services.py
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import List, Any
 from uuid import uuid4
-from fastapi import HTTPException
+from fastapi import HTTPException, BackgroundTasks
 from langchain.schema import Document
+from langchain.schema import HumanMessage
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pydantic import Field
 
@@ -282,25 +284,29 @@ class TopicService:
         return {"message": "Topic documents updated successfully"}
 
     async def update_topic(self, topic_id: str, updated_topic: TopicCreate, db: Session):
-        topic = db.query(TopicModel).filter(TopicModel.id == topic_id).first()
+        topic = db.query(Topic).filter(Topic.id == topic_id).first()
         if not topic:
             raise HTTPException(status_code=404, detail="Topic not found")
-
+        logging.info(f"Updating topic {topic_id} with new data: {updated_topic}")
         topic.name = updated_topic.name
         topic.description = updated_topic.description
+        topic.course_id = updated_topic.course_id  # Asegúrate de actualizar el course_id si es necesario
         db.commit()
 
         # Actualizar el tópico en RAG
-        rag_instance = await RAGSingleton.get_instance()
-        topic_info = TopicInfo(
-            topic_id=topic.id,
-            name=topic.name,
-            course_id=topic.course_id,
-            description=topic.description
-        )
-        await rag_instance.add_topic(topic_info)  # Esto actualizará el tópico existente
+        # rag_instance = await RAGSingleton.get_instance()
+        # topic_info = TopicInfo(
+        #     topic_id=topic.id,
+        #     name=topic.name,
+        #     course_id=topic.course_id,
+        #     description=topic.description
+        # )
+        # await rag_instance.add_topic(topic_info)  # Esto actualizará el tópico existente
 
         return TopicResponse.from_orm(topic)
+
+    def get_topic_by_id(self, topic_id: str, db: Session):
+        return db.query(Topic).filter(Topic.id == topic_id).first()
 
     async def delete_topic(self, topic_id: str, db: Session):
         topic = db.query(TopicModel).filter(TopicModel.id == topic_id).first()
@@ -327,12 +333,6 @@ class TopicService:
                 "metadata": doc.metadata
             } for doc in documents
         ]
-
-
-def generate_topic_title(question: str) -> str:
-    key_phrases = keywords.keywords(question, words=5).split('\n')
-    title = " ".join(key_phrases).title()
-    return title
 
 
 class QuestionService:
@@ -535,16 +535,14 @@ class QuestionService:
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Generar título del tópico basado en la pregunta inicial
-        topic_title = generate_topic_title(session_start.initial_question)
-
-        # Crear un nuevo tópico
-        new_topic = TopicCreate(
-            name=topic_title,
+        # Crear un tópico con un título temporal
+        temp_topic = TopicCreate(
+            id=str(uuid4()),
+            name=f"Chat Session {datetime.now().strftime('%Y-%m-%d %H:%M')}",
             description=session_start.initial_question,
             course_id=session_start.course_id
         )
-        created_topic = await self.topic_service.create_topic(new_topic, db)
+        created_topic = await self.topic_service.create_topic(temp_topic, db)
 
         chat_session = self.database.create_chat_session(
             db,
@@ -552,36 +550,42 @@ class QuestionService:
             course_id=session_start.course_id,
             topic_id=created_topic.id
         )
-
-        # Sincronizar documentos al inicio de la sesión
-        await self.sync_documents(session_start.course_id, created_topic.id)
-
+        from app.event.tasks import generate_and_update_title
+        # Iniciar la tarea de Celery para generar el título
+        logging.info(f"Enviando tarea generate_and_update_title para topic_id: {created_topic.id}")
+        task = generate_and_update_title.delay(created_topic.id, session_start.initial_question)
+        #print(task.get())
+        #logging.info(f"Task ID: {task.get()}")
+        #logging.info(f"Task ID: {task.id}")
         # Procesar la pregunta inicial
-        question = QuestionV2(
+        initial_question = QuestionV2(
             text=session_start.initial_question,
             user_id=session_start.user_id,
             chat_session_id=chat_session.id
         )
-        answer = await self.process_question(question, db)
-
-        # Guardar la pregunta inicial en la base de datos
-        db_question = QuestionModel(
-            id=str(uuid4()),
-            text=session_start.initial_question,
-            user_id=session_start.user_id,
-            chat_session_id=chat_session.id,
-            course_id=session_start.course_id,
-            topic_id=created_topic.id
-        )
-        db.add(db_question)
-        db.commit()
+        answer = await self.process_question(initial_question, db)
 
         return {
             "chat_session_id": chat_session.id,
             "topic_id": created_topic.id,
-            "topic_title": topic_title,
-            "initial_answer": answer
+            "topic_title": created_topic.name,
+            "initial_answer": answer,
+            "title_task_id": task.id
         }
+
+    async def get_title_task_status(self, task_id: str):
+        from app.event.tasks import generate_and_update_title
+        task = generate_and_update_title.AsyncResult(task_id)
+        if task.state == 'PENDING':
+            return {'state': task.state, 'status': 'Task is pending...'}
+        elif task.state != 'FAILURE':
+            return {
+                'state': task.state,
+                'status': 'Task completed' if task.state == 'SUCCESS' else 'Task is in progress',
+                'result': task.result
+            }
+        else:
+            return {'state': task.state, 'status': 'Task failed', 'error': str(task.info)}
 
     async def end_chat_session(self, chat_session_id: str, db: Session):
         chat_session = self.database.end_chat_session(db, chat_session_id)
