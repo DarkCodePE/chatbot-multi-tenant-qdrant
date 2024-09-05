@@ -4,6 +4,7 @@
 .env
 config/chatbot-secrets.yaml
 config/google-credentials.json
+.env.local
 node_modules/
 __pycache__/
 *.pyc
