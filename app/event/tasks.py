@@ -82,7 +82,7 @@ def generate_and_update_title(self, topic_id: str, question: str):
             course_id=existing_topic.course_id,
             description=existing_topic.description
         )
-        topic_service.update_topic(topic_id, updated_topic, db)
+        topic_service.update_topic_sync(topic_id, updated_topic, db)
         logger.info(f"Updated topic {topic_id} with new title: {new_title}")
 
         return {'status': 'success', 'new_title': new_title}
