@@ -305,6 +305,16 @@ class TopicService:
 
         return TopicResponse.from_orm(topic)
 
+    def update_topic_sync(self, topic_id: str, updated_topic: TopicCreate, db: Session):
+        topic = db.query(Topic).filter(Topic.id == topic_id).first()
+        if not topic:
+            raise HTTPException(status_code=404, detail="Topic not found")
+        topic.name = updated_topic.name
+        topic.description = updated_topic.description
+        topic.course_id = updated_topic.course_id
+        db.commit()
+        return TopicResponse.from_orm(topic)
+
     def get_topic_by_id(self, topic_id: str, db: Session):
         return db.query(Topic).filter(Topic.id == topic_id).first()
 
