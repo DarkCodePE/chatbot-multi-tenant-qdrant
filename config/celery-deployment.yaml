@@ -1,52 +1,23 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: fastapi-chatbot
+  name: celery-worker
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
-      app: fastapi-chatbot
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 25%  # Máximo de pods no disponibles durante la actualización
-      maxSurge: 1          # Número máximo de pods adicionales creados durante la actualización
+      app: celery-worker
   template:
     metadata:
       labels:
-        app: fastapi-chatbot
+        app: celery-worker
     spec:
       containers:
-      - name: fastapi-chatbot
-        image: orlandogtp/fastapi-chatbot:v1.1.5
-        command: ["uvicorn"]
-        args: ["app.main:app", "--host", "0.0.0.0", "--port", "8000"]
-        ports:
-        - containerPort: 8000
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 8000
-          initialDelaySeconds: 5
-          periodSeconds: 10
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8000
-          initialDelaySeconds: 15
-          periodSeconds: 20
+      - name: celery-worker
+        image: orlandogtp/fastapi-chatbot:v1.1.5  # Asegúrate de usar la misma imagen que tu aplicación FastAPI
+        command: ["celery"]
+        args: ["-A", "app.celery_app", "worker", "--loglevel=DEBUG", "-P", "solo"]
         env:
-        - name: OPENAI_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: chatbot-secrets
-              key: OPENAI_API_KEY
-        - name: TAVILY_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: chatbot-secrets
-              key: TAVILY_API_KEY
         - name: REDIS_HOST
           valueFrom:
             secretKeyRef:
@@ -62,6 +33,41 @@ spec:
             secretKeyRef:
               name: chatbot-secrets
               key: REDIS_PASSWORD
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: DB_NAME
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: DB_PASSWORD
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: DB_HOST
+        - name: DB_PORT
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: DB_PORT
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: OPENAI_API_KEY
+        - name: TAVILY_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: TAVILY_API_KEY
         - name: CONFIG_FILE
           valueFrom:
             secretKeyRef:
@@ -107,22 +113,13 @@ spec:
             secretKeyRef:
               name: chatbot-secrets
               key: COLLECTION_NAME
-        - name: DB_USER
+        - name: GOOGLE_APPLICATION_CREDENTIALS
           valueFrom:
             secretKeyRef:
               name: chatbot-secrets
-              key: DB_USER
-        - name: DB_PASSWORD
+              key: GOOGLE_APPLICATION_CREDENTIALS
+        - name: USER_AGENT
           valueFrom:
             secretKeyRef:
               name: chatbot-secrets
-              key: DB_PASSWORD
-        - name: DB_NAME
-          valueFrom:
-            secretKeyRef:
-              name: chatbot-secrets
-              key: DB_NAME
-        - name: DB_HOST
-          value: "postgresql"  # o el nombre de tu servicio de base de datos
-        - name: DB_PORT
-          value: "5432"
+              key: USER_AGENT

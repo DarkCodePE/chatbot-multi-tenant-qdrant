@@ -34,15 +34,13 @@ pytest
 pytest-asyncio
 langchain-community
 langchain-experimental
-chromadb
 langchainhub
 langsmith
 PyPDF2
 langchain_qdrant
 psycopg2
 redis
-rq
-rq-dashboard
 starlette
 scipy
 celery
+summa

@@ -560,6 +560,10 @@ class QuestionService:
             course_id=session_start.course_id,
             topic_id=created_topic.id
         )
+
+        # Sincronizar documentos al inicio de la sesión
+        await self.sync_documents(session_start.course_id, created_topic.id)
+
         from app.event.tasks import generate_and_update_title
         # Iniciar la tarea de Celery para generar el título
         logging.info(f"Enviando tarea generate_and_update_title para topic_id: {created_topic.id}")

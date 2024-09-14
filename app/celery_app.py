@@ -4,11 +4,11 @@ import logging
 
 from celery.signals import after_setup_logger
 
-redis_host = os.getenv('REDIS_HOST', 'localhost')
+redis_host = os.getenv('REDIS_HOST', 'redis-server')
 redis_port = int(os.getenv('REDIS_PORT', 6379))
 redis_password = os.getenv('REDIS_PASSWORD')
 redis_url = f'redis://{redis_host}:{redis_port}/0'
-
+logging.info(redis_url)
 app = Celery('app', broker=redis_url, backend=redis_url)
 
 app.conf.update(

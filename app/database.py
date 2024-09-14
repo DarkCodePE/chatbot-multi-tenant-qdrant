@@ -63,7 +63,7 @@ create_database_if_not_exists()
 
 # URL de la base de datos
 SQLALCHEMY_DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
-print(SQLALCHEMY_DATABASE_URL)
+#print(SQLALCHEMY_DATABASE_URL)
 # Configuración del engine y creación de la sesión
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

@@ -1,5 +1,7 @@
 from http.client import HTTPException
 from typing import List
+
+from celery.result import AsyncResult
 from fastapi import FastAPI, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse
@@ -163,7 +165,8 @@ async def get_chat_history(chat_id: str, db: Session = Depends(database.get_db))
 @app.get("/task/{task_id}")
 async def get_task_status(task_id: str):
     from app.event.tasks import generate_and_update_title
-    task = generate_and_update_title.AsyncResult(task_id)
+    task = AsyncResult(task_id)
+    #task = generate_and_update_title.AsyncResult(task_id)
     if task.state == 'PENDING':
         response = {
             'state': task.state,
