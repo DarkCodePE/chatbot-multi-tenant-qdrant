@@ -1,7 +1,5 @@
 # dependencies
-beautifulsoup4
 colorama
-duckduckgo_search
 md2pdf
 playwright
 openai
@@ -16,13 +14,10 @@ langchain
 langchain-openai
 langchain-google-genai
 langchain_community
-tavily-python
-arxiv
 PyMuPDF
 requests
 jinja2
 aiofiles
-newspaper3k
 SQLAlchemy
 mistune
 python-docx
@@ -43,4 +38,3 @@ redis
 starlette
 scipy
 celery
-summa

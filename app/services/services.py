@@ -11,7 +11,7 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pydantic import Field
 
 from app.collections import TopicRepository
-from app.rag import RAG, TopicInfo
+from app.generator.rag import RAG, TopicInfo
 import logging
 import asyncio
 from app.model import User as UserModel, Course as CourseModel, Topic as TopicModel, Question as QuestionModel, \
@@ -30,17 +30,13 @@ from langchain.chains import create_history_aware_retriever, create_retrieval_ch
 from langchain_core.runnables import RunnablePassthrough, RunnableWithMessageHistory
 from langsmith import traceable
 from langchain_qdrant import QdrantVectorStore
-from sqlalchemy import func
 from qdrant_client import QdrantClient, models
 from app.historial import QdrantChatMessageHistory
 from dotenv import load_dotenv
 from langsmith.wrappers import wrap_openai
 import openai
-from summa import keywords
-from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
-from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 
 load_dotenv()
 logging.basicConfig(level=logging.DEBUG,
@@ -98,8 +94,11 @@ class UserService:
             db_user.session_id = str(uuid4())
             db.commit()
 
+        # Iniciar la tarea de sincronización de documentos
+        from app.event.tasks import sync_user_documents
+        sync_user_documents.delay(db_user.id)
+
         user_courses = [course.name for course in db_user.courses]
-        #course_collections = [course.collection_name for course in db_user.courses]
 
         return UserResponse(
             id=db_user.id,
@@ -562,7 +561,7 @@ class QuestionService:
         )
 
         # Sincronizar documentos al inicio de la sesión
-        await self.sync_documents(session_start.course_id, created_topic.id)
+        #await self.sync_documents(session_start.course_id, created_topic.id)
 
         from app.event.tasks import generate_and_update_title
         # Iniciar la tarea de Celery para generar el título
