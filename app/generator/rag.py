@@ -85,7 +85,7 @@ class RAG:
         Método para procesar documentos de Google Drive y añadirlos a un tema específico.
         Este método no se ejecuta automáticamente al iniciar un chat, sino que debe ser llamado explícitamente.
         """
-        return await self.topic_repo.process_google_drive_documents(folder_name, course_id, topic_id)
+        return await self.topic_repo.process_google_drive_documents(folder_name, course_id)
 async def main():
     rag_instance = RAG()
     await rag_instance.initialize()

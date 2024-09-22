@@ -106,7 +106,7 @@ def sync_user_documents(user_id: str):
         for course in user.courses:
             if course.google_drive_folder:
                 logger.info(f"Synchronizing documents for course: {course.id}")
-                rag.process_google_drive_folder(course.google_drive_folder, course.id, None)
+                rag.process_google_drive_folder(course.google_drive_folder_id, course.id, None)
 
         logger.info(f"Document synchronization completed for user: {user_id}")
         return {"status": "success", "message": "Documents synchronized successfully"}

@@ -47,7 +47,7 @@ class TopicRepository:
 
         credentials = service_account.Credentials.from_service_account_file(
             credentials_path,
-            scopes=['https://www.googleapis.com/auth/drive.readonly']
+            scopes=['https://www.googleapis.com/auth/drive']
         )
         return build('drive', 'v3', credentials=credentials)
 
@@ -100,6 +100,18 @@ class TopicRepository:
         except Exception as e:
             logging.error(f"Error al añadir documento: {str(e)}")
             raise
+
+    def create_folder(self, folder_name):
+        try:
+            file_metadata = {
+                'name': folder_name,
+                'mimeType': 'application/vnd.google-apps.folder'
+            }
+            file = self.drive_service.files().create(body=file_metadata, fields='id').execute()
+            return file.get('id')
+        except Exception as e:
+            logging.error(f"Error creating folder in Google Drive: {str(e)}")
+            return None
 
     def get_folder_id(self, folder_name):
         try:
@@ -202,7 +214,7 @@ class TopicRepository:
             logging.error(f"Error inesperado al acceder a la carpeta: {error}")
             return None
 
-    async def process_google_drive_documents(self, folder_id: str, course_id: str, topic_id: str):
+    async def process_google_drive_documents(self, folder_id: str, course_id: str, processed_docs: list):
         try:
             # Verificar permisos antes de procesar
             # permissions = self.check_folder_permissions(folder_id)
@@ -212,15 +224,14 @@ class TopicRepository:
             # Verificar si la carpeta es accesible
             # access = self.list_accessible_folders()
             # logging.info(f"Carpetas accesibles: {access}")
-
-            logging.info(f"Iniciando procesamiento de documentos para curso {course_id} y tópico {topic_id}")
-            logging.info(f"Buscando archivos en la carpeta de Google Drive con ID: {folder_id}")
-
             results = self.drive_service.files().list(
                 q=f"'{folder_id}' in parents",
                 fields="files(id, name, mimeType, createdTime, modifiedTime)"
             ).execute()
             files = results.get('files', [])
+
+            # Obtener la lista de documentos procesados para este curso
+            processed_file_ids = {doc.google_file_id: doc for doc in processed_docs}
 
             logging.info(f"Archivos encontrados en la carpeta '{folder_id}':")
             for file in files:
@@ -291,7 +302,6 @@ class TopicRepository:
                             vector=vector,
                             payload={
                                 "course_id": course_id,
-                                "topic_id": topic_id,
                                 "content": text_content,
                                 "metadata": {
                                     "name": file.get('name'),
@@ -311,7 +321,7 @@ class TopicRepository:
 
             success_rate = (processed_files / total_files) * 100 if total_files > 0 else 0
 
-            logging.info(f"Procesamiento completado para curso {course_id} y tópico {topic_id}:")
+            logging.info(f"Procesamiento completado para curso {course_id}")
             logging.info(f"Total de archivos: {total_files}")
             logging.info(f"Archivos procesados exitosamente: {processed_files}")
             logging.info(f"Archivos fallidos: {failed_files}")

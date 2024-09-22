@@ -15,7 +15,7 @@ from app.generator.rag import RAG, TopicInfo
 import logging
 import asyncio
 from app.model import User as UserModel, Course as CourseModel, Topic as TopicModel, Question as QuestionModel, \
-    ChatSession, Document as DocumentModel, Course, Topic
+    ChatSession, Document as DocumentModel, Course, Topic, ProcessedDocument
 from app.retriever.custom_qdrant_retriever import CustomQdrantRetriever, CustomQdrantRetrieverConfig
 from app.retriever.document_list_retriever import DocumentListRetriever
 from app.schema.schema import UserLogin, UserResponse, DocumentCreate, CourseAssignment, CourseCreate, CourseResponse, \
@@ -158,12 +158,46 @@ class CourseService:
     def __init__(self, database):
         self.database = database
 
+    # async def create_course(self, course: CourseCreate, db: Session):
+    #     new_course = CourseModel(name=course.name)
+    #     db.add(new_course)
+    #     db.commit()
+    #     db.refresh(new_course)
+    #     return CourseResponse.from_orm(new_course)
+
     async def create_course(self, course: CourseCreate, db: Session):
-        new_course = CourseModel(name=course.name)
-        db.add(new_course)
-        db.commit()
-        db.refresh(new_course)
-        return CourseResponse.from_orm(new_course)
+        try:
+            # Inicializar el TopicRepository para acceder a los métodos de Google Drive
+            qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+            embeddings = OpenAIEmbeddings()
+            topic_repository = TopicRepository(qdrant_client, embeddings)
+
+            # Buscar la carpeta en Google Drive
+            folder_id = topic_repository.get_folder_id(course.name)
+            logging.info(f"Carpeta encontrada, folder_id {folder_id}")
+            if not folder_id:
+                # Si la carpeta no existe, la creamos
+                folder_metadata = {
+                    'name': course.name,
+                    'mimeType': 'application/vnd.google-apps.folder'
+                }
+                folder = topic_repository.drive_service.files().create(body=folder_metadata, fields='id').execute()
+                folder_id = folder.get('id')
+                logging.info(f"Carpeta creada para el curso {course.name}: {folder_id}")
+            else:
+                logging.info(f"Carpeta encontrada para el curso {course.name}: {folder_id}")
+
+            # Crear el curso en la base de datos
+            new_course = CourseModel(name=course.name, google_drive_folder_id=folder_id)
+            db.add(new_course)
+            db.commit()
+            db.refresh(new_course)
+
+            return CourseResponse.from_orm(new_course)
+        except Exception as e:
+            db.rollback()
+            logging.error(f"Error al crear el curso: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Error al crear el curso: {str(e)}")
 
     def get_all_courses(self, db: Session):
         return [CourseResponse.from_orm(course) for course in db.query(CourseModel).all()]
@@ -453,10 +487,14 @@ class QuestionService:
             }
         )
 
-    async def sync_documents(self, course_id: str, topic_id: str):
+    async def sync_documents(self, course_id: str, topic_id: str, db: Session):
         try:
             rag_instance = await RAGSingleton.get_instance()
-
+            # Obtener la lista de documentos procesados para este curso
+            processed_docs = (db.query(ProcessedDocument)
+                              .filter(ProcessedDocument.course_id == course_id)
+                              .all())
+            logging.info(f"Procesando... {len(processed_docs)} documentos para el curso {course_id}")
             if GOOGLE_DRIVE_FOLDER_ID:
                 success = await rag_instance.process_google_drive_folder(GOOGLE_DRIVE_FOLDER_ID, course_id, topic_id)
                 if success:
