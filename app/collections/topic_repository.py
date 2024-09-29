@@ -12,11 +12,13 @@ from dotenv import load_dotenv
 from langchain.schema import Document
 from pydantic import BaseModel, ConfigDict
 from langchain_openai import OpenAIEmbeddings
+
+from app.model import ProcessedDocument
 from app.schema.schema import TopicInfo
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 # Configuration
 load_dotenv()
@@ -222,7 +224,7 @@ class TopicRepository:
             ).execute()
             files = results.get('files', [])
 
-            processed_file_ids = {doc.google_file_id: doc for doc in processed_docs}
+            processed_file_ids = {doc.google_file_id: doc for doc in processed_docs} if processed_docs else {}
 
             logging.info(f"Archivos encontrados en la carpeta '{folder_id}': {len(files)}")
 
@@ -230,6 +232,7 @@ class TopicRepository:
             processed_files = 0
             updated_files = 0
             failed_files = 0
+            new_processed_docs = []
 
             for file in files:
                 try:
@@ -254,10 +257,11 @@ class TopicRepository:
 
                     vector = await self.embeddings.aembed_query(text_content)
 
+                    point_id = str(uuid4())
                     self.qdrant_client.upsert(
                         collection_name=self.collection_name,
                         points=[models.PointStruct(
-                            id=str(uuid4()),
+                            id=point_id,
                             vector=vector,
                             payload={
                                 "course_id": course_id,
@@ -273,6 +277,16 @@ class TopicRepository:
                             }
                         )]
                     )
+
+                    # Crear o actualizar el registro de ProcessedDocument
+                    new_processed_doc = ProcessedDocument(
+                        course_id=course_id,
+                        google_file_id=file_id,
+                        file_name=file_name,
+                        last_modified=modified_time,
+                        qdrant_point_id=point_id
+                    )
+                    new_processed_docs.append(new_processed_doc)
 
                     processed_files += 1
                     logging.info(f"Procesado archivo {processed_files}/{total_files}: {file_name}")
@@ -290,11 +304,70 @@ class TopicRepository:
             logging.info(f"Archivos fallidos: {failed_files}")
             logging.info(f"Tasa de éxito: {success_rate:.2f}%")
 
-            return processed_files > 0
+            return True, new_processed_docs
 
         except Exception as e:
             logging.error(f"Error procesando documentos de Google Drive: {str(e)}")
-            return False
+            return False, []
+
+    async def upload_document_to_drive(self, course_id: str, folder_id: str, file_name: str, file_content: bytes, mime_type: str):
+        try:
+            # Obtener el ID de la carpeta del curso
+            if not folder_id:
+                raise ValueError(f"No se encontró la carpeta para el curso {course_id}")
+
+            file_metadata = {
+                'name': file_name,
+                'parents': [folder_id]
+            }
+            media = MediaIoBaseUpload(io.BytesIO(file_content), mimetype=mime_type, resumable=True)
+            file = self.drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id,name,mimeType,createdTime,modifiedTime'
+            ).execute()
+
+            logging.info(f"Archivo subido: {file.get('name')} (ID: {file.get('id')})")
+
+            # Procesar el contenido del archivo para Qdrant
+            text_content = TextExtractor.extract_text_content(file_content, mime_type)
+            vector = await self.embeddings.aembed_query(text_content)
+
+            point_id = str(uuid4())
+            self.qdrant_client.upsert(
+                collection_name=self.collection_name,
+                points=[models.PointStruct(
+                    id=point_id,
+                    vector=vector,
+                    payload={
+                        "course_id": course_id,
+                        "content": text_content,
+                        "metadata": {
+                            "name": file.get('name'),
+                            "mimeType": file.get('mimeType'),
+                            "createdTime": file.get('createdTime'),
+                            "modifiedTime": file.get('modifiedTime'),
+                            "google_file_id": file.get('id')
+                        },
+                        "type": "document"
+                    }
+                )]
+            )
+
+            # Crear un nuevo ProcessedDocument
+            new_processed_doc = ProcessedDocument(
+                course_id=course_id,
+                google_file_id=file.get('id'),
+                file_name=file.get('name'),
+                last_modified=datetime.fromisoformat(file.get('modifiedTime').rstrip('Z')),
+                qdrant_point_id=point_id  # Se llenará después de procesar el documento
+            )
+
+            return new_processed_doc
+
+        except Exception as e:
+            logging.error(f"Error al subir el documento a Google Drive: {str(e)}")
+            raise
 
     async def download_and_process_file(self, file_id: str, file_name: str, file_mime: str):
         try:
@@ -326,7 +399,7 @@ class TopicRepository:
 
         except Exception as e:
             logging.error(f"Error al descargar y procesar el archivo {file_name}: {str(e)}")
-            return False
+            return None
 
     async def search_documents(self, query: str, course_id: str = None, topic_id: str = None, k: int = 5):
         query_vector = await self.embeddings.aembed_query(query)
@@ -417,3 +490,33 @@ class TopicRepository:
         except Exception as e:
             logging.error(f"Error al eliminar documento: {str(e)}")
             return False
+
+
+class TextExtractor:
+    @staticmethod
+    def extract_text_content(file_content: bytes, mime_type: str) -> str:
+        try:
+            if mime_type == 'application/pdf':
+                return TextExtractor._extract_from_pdf(file_content)
+            elif mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+                return TextExtractor._extract_from_docx(file_content)
+            elif mime_type == 'text/plain':
+                return file_content.decode('utf-8')
+            else:
+                raise ValueError(f"Unsupported file type: {mime_type}")
+        except Exception as e:
+            logging.error(f"Error extracting text content: {str(e)}")
+            raise
+
+    @staticmethod
+    def _extract_from_pdf(file_content: bytes) -> str:
+        pdf = PdfReader(io.BytesIO(file_content))
+        text = ""
+        for page in pdf.pages:
+            text += page.extract_text() + "\n"
+        return text
+
+    @staticmethod
+    def _extract_from_docx(file_content: bytes) -> str:
+        doc = Document(io.BytesIO(file_content))
+        return "\n".join([paragraph.text for paragraph in doc.paragraphs])

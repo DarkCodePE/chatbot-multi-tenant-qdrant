@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: fastapi-chatbot
 spec:
-  replicas: 2
+  replicas: 3
   selector:
     matchLabels:
       app: fastapi-chatbot

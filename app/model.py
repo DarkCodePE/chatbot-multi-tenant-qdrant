@@ -62,6 +62,7 @@ class ProcessedDocument(Base):
     google_file_id = Column(String, unique=True, index=True)
     file_name = Column(String)
     last_modified = Column(DateTime)
+    qdrant_point_id = Column(String, unique=True)  # ID in Qdrant
 
     course = relationship("Course", back_populates="processed_documents")
 

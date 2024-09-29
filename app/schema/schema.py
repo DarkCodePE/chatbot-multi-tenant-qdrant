@@ -62,12 +62,20 @@ class TopicInfo(BaseModel):
     course_id: str
     description: str = ""
 
+
 class DocumentCreate(BaseModel):
     title: str
     content: str
     topic_id: str
     type: str
     language: str
+
+
+class UploadDocument(BaseModel):
+    course_id: str
+    file_name: str
+    file_content: bytes
+    mime_type: str
 
 
 class Feedback(BaseModel):
@@ -83,6 +91,18 @@ class CourseResponse(CourseBase):
     id: str
     name: str
     model_config = ConfigDict(from_attributes=True)
+
+
+class ProcessedDocumentResponse(BaseModel):
+    id: str
+    course_id: str
+    google_file_id: str
+    file_name: str
+    last_modified: datetime
+    qdrant_point_id: str
+
+    class Config:
+        orm_mode = True
 
 
 class CourseAssignment(BaseModel):
@@ -102,10 +122,12 @@ class Question(BaseModel):
     course_id: str
     topic_id: str
 
+
 class ChatListItem(BaseModel):
     id: str
     topic_title: str
     timestamp: datetime
+
 
 class ChatListResponse(BaseModel):
     user_id: str

@@ -2,7 +2,7 @@ from http.client import HTTPException
 from typing import List
 
 from celery.result import AsyncResult
-from fastapi import FastAPI, Depends, BackgroundTasks
+from fastapi import FastAPI, Depends, BackgroundTasks, Form, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse
 
@@ -12,9 +12,9 @@ from sqlalchemy.orm import Session
 from app.database import init_db
 from app.schema.schema import UserResponse, CourseResponse, TopicResponse, DocumentCreate, CourseCreate, UserLogin, \
     TopicCreate, CourseAssignment, QuestionV2, Feedback, DocumentAddToTopic, ChatSessionStart, ChatSessionEnd, \
-    ChatListResponse
+    ChatListResponse, UploadDocument, ProcessedDocumentResponse
 from app.model import User as UserModel, Course as CourseModel, Topic as TopicModel, Question as QuestionModel, \
-    ChatSession, Document as DocumentModel, Course, Topic
+    ChatSession, Document as DocumentModel, Course, Topic, ProcessedDocument
 from app.services.services import UserService, CourseService, TopicService, QuestionService
 import asyncio
 import json
@@ -77,9 +77,36 @@ def read_user(user_id: str, db: Session = Depends(database.get_db)):
     return user_service.get_user(user_id, db)
 
 
+@app.post("/upload-document")
+async def upload_document(
+        course_id: str = Form(...),
+        file: UploadFile = File(...),
+        db: Session = Depends(database.get_db)
+):
+    try:
+        file_content = await file.read()
+        upload_file = UploadDocument(course_id=course_id, file_name=file.filename, file_content=file_content,
+                                     mime_type=file.content_type)
+        result = await course_service.upload_document(file=upload_file, db=db)
+        return result
+    except Exception as e:
+        logging.error(f"Error al subir el documento: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/users/{user_id}/documents")
 async def add_user_document(user_id: str, document: DocumentCreate, db: Session = Depends(database.get_db)):
     return await user_service.add_user_document(user_id, document, db)
+
+
+@app.get("/courses/{course_id}/files", response_model=List[ProcessedDocumentResponse])
+async def get_course_files(course_id: str, db: Session = Depends(database.get_db)):
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    files = db.query(ProcessedDocument).filter(ProcessedDocument.course_id == course_id).all()
+    return files
 
 
 @app.get("/users/{user_id}/courses", response_model=List[CourseResponse])
@@ -190,6 +217,7 @@ async def get_task_status(task_id: str):
             'error': str(task.info.get('error', 'Unknown error occurred'))
         }
     return response
+
 
 if __name__ == "__main__":
     import uvicorn

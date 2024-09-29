@@ -20,7 +20,7 @@ from app.retriever.custom_qdrant_retriever import CustomQdrantRetriever, CustomQ
 from app.retriever.document_list_retriever import DocumentListRetriever
 from app.schema.schema import UserLogin, UserResponse, DocumentCreate, CourseAssignment, CourseCreate, CourseResponse, \
     TopicCreate, TopicResponse, Question, Feedback, QuestionV2, DocumentAddToTopic, ChatSessionStart, ChatListResponse, \
-    ChatListItem
+    ChatListItem, UploadDocument
 from sqlalchemy.orm import Session
 from app.model import User as UserModel
 from langchain_core.vectorstores import VectorStoreRetriever
@@ -95,8 +95,8 @@ class UserService:
             db.commit()
 
         # Iniciar la tarea de sincronización de documentos
-        from app.event.tasks import sync_user_documents
-        sync_user_documents.delay(db_user.id)
+        #from app.event.tasks import sync_user_documents
+        #sync_user_documents.delay(db_user.id)
 
         user_courses = [course.name for course in db_user.courses]
 
@@ -153,17 +153,38 @@ class UserService:
         else:
             return {"message": "User already assigned to this course"}
 
+    #get_course_folder_id
+    def get_course_folder_id(self, course_id: str, db: Session):
+        course = db.query(CourseModel).filter(CourseModel.id == course_id).first()
+        if not course:
+            raise HTTPException(status_code=404, detail="Course not found")
+        return course.google_drive_folder_id
+
 
 class CourseService:
     def __init__(self, database):
         self.database = database
 
-    # async def create_course(self, course: CourseCreate, db: Session):
-    #     new_course = CourseModel(name=course.name)
-    #     db.add(new_course)
-    #     db.commit()
-    #     db.refresh(new_course)
-    #     return CourseResponse.from_orm(new_course)
+    async def upload_document(self, file: UploadDocument, db: Session):
+        try:
+            # Inicializar el TopicRepository para acceder a los métodos de Google Drive
+            qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+            embeddings = OpenAIEmbeddings()
+            topic_repository = TopicRepository(qdrant_client, embeddings)
+            course = self.database.get_course_by_id(db, file.course_id)
+            if course is None:
+                raise HTTPException(status_code=404, detail="Course not found")
+            new_processed_doc = await topic_repository.upload_document_to_drive(file.course_id, course.google_drive_folder_id,
+                                                                          file.file_name, file.file_content,
+                                                                          file.mime_type)
+            logging.info(f"Documento subido: {new_processed_doc}")
+            db.add(new_processed_doc)
+            db.commit()
+            db.refresh(new_processed_doc)
+            return new_processed_doc
+        except Exception as e:
+            logging.error(f"Error al subir el documento: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     async def create_course(self, course: CourseCreate, db: Session):
         try:
@@ -181,9 +202,25 @@ class CourseService:
                     'name': course.name,
                     'mimeType': 'application/vnd.google-apps.folder'
                 }
-                folder = topic_repository.drive_service.files().create(body=folder_metadata, fields='id').execute()
+                folder = (topic_repository.drive_service
+                          .files()
+                          .create(body=folder_metadata, fields='id')
+                          .execute())
                 folder_id = folder.get('id')
                 logging.info(f"Carpeta creada para el curso {course.name}: {folder_id}")
+                # Compartir la carpeta con el usuario
+                permission = {
+                    'type': 'user',
+                    'role': 'writer',
+                    'emailAddress': 'orlandokuanb@gmail.com'
+                }
+                topic_repository.drive_service.permissions().create(
+                    fileId=folder_id,
+                    body=permission,
+                    fields='id',
+                ).execute()
+                folder_id = folder.get('id')
+                logging.info(f"Carpeta creada y compartida para el curso {course.name}: {folder_id}")
             else:
                 logging.info(f"Carpeta encontrada para el curso {course.name}: {folder_id}")
 
@@ -496,8 +533,15 @@ class QuestionService:
                               .all())
             logging.info(f"Procesando... {len(processed_docs)} documentos para el curso {course_id}")
             if GOOGLE_DRIVE_FOLDER_ID:
-                success = await rag_instance.process_google_drive_folder(GOOGLE_DRIVE_FOLDER_ID, course_id, topic_id)
+                #success = await rag_instance.process_google_drive_folder(GOOGLE_DRIVE_FOLDER_ID, course_id, topic_id)
+                success, new_processed_docs = await rag_instance.process_google_drive_documents(GOOGLE_DRIVE_FOLDER_ID,
+                                                                                                course_id,
+                                                                                                processed_docs)
                 if success:
+                    # Guardar los nuevos documentos procesados en la base de datos
+                    for doc in new_processed_docs:
+                        db.add(doc)
+                    db.commit()
                     logging.info(f"Documentos actualizados para curso {course_id} y tema {topic_id}")
                 else:
                     logging.warning(f"No se pudieron actualizar documentos para curso {course_id} y tema {topic_id}")
