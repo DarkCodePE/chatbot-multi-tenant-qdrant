@@ -1,4 +1,6 @@
 # tasks.py
+import asyncio
+
 from app.celery_app import app
 from langchain_core.pydantic_v1 import BaseModel, Field
 
@@ -106,7 +108,8 @@ def sync_user_documents(user_id: str):
         for course in user.courses:
             if course.google_drive_folder:
                 logger.info(f"Synchronizing documents for course: {course.id}")
-                success, new_processed_docs = rag.process_google_drive_folder(course.google_drive_folder_id, course.id, None)
+                success, new_processed_docs = rag.process_google_drive_folder(course.google_drive_folder_id, course.id,
+                                                                              None)
                 if success:
                     # Guardar los nuevos documentos procesados en la base de datos
                     for doc in new_processed_docs:
@@ -127,18 +130,23 @@ def sync_user_documents(user_id: str):
 
 @app.task(name="app.event.tasks.sync_all_courses")
 def sync_all_courses():
+    # Ejecutar la función asíncrona dentro del bucle de eventos
+    return asyncio.run(sync_all_courses_async())
+
+
+async def sync_all_courses_async():
     db = SessionLocal()
     try:
-        #all courses
+        # Todas las cursos
         courses = db.query(Course).all()
         # Inicializar una nueva instancia de RAG para esta tarea
         rag = RAG()
-        rag.initialize()  # Asumiendo que initialize() es síncrono, si no, usar run_until_complete
+        await rag.initialize()  # Asumiendo que tienes una versión asíncrona
 
         for course in courses:
             if course.google_drive_folder_id:
                 logger.info(f"Synchronizing documents for course: {course.id}")
-                rag.process_google_drive_folder(course.google_drive_folder_id, course.id, None)
+                await rag.process_google_drive_folder(course.google_drive_folder_id, course.id, None)
 
         logger.info("Document synchronization completed for all courses")
         return {"status": "success", "message": "Documents synchronized successfully"}

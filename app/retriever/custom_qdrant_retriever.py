@@ -1,4 +1,4 @@
-from typing import List, Any
+from typing import List, Any, Optional
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
@@ -24,16 +24,24 @@ class CustomQdrantRetriever(BaseRetriever):
         super().__init__(config=config)
 
     def _get_relevant_documents(
-        self, query: str, run_manager: CallbackManagerForRetrieverRun | None = None
+            self,
+            query: str,
+            filters: Optional[Filter] = None,
+            run_manager: CallbackManagerForRetrieverRun | None = None
     ) -> List[Document]:
         query_vector = self.config.embeddings.embed_query(query)
-
+        # Filtro base para el tipo de documento
         filter_conditions = [FieldCondition(key="type", match=MatchValue(value="document"))]
+        # Añadir filtros adicionales si se proporcionan
+        if filters:
+            filter_conditions += filters.must if filters.must else []
+
+        combined_filter = Filter(must=filter_conditions)
 
         results = self.config.client.search(
             collection_name=self.config.collection_name,
             query_vector=query_vector,
-            query_filter=Filter(must=filter_conditions),
+            query_filter=Filter(must=combined_filter),
             limit=self.config.k
         )
 
@@ -52,6 +60,17 @@ class CustomQdrantRetriever(BaseRetriever):
         return documents
 
     async def _aget_relevant_documents(
-        self, query: str, run_manager: CallbackManagerForRetrieverRun | None = None
+            self,
+            query: str,
+            filters: Optional[Filter] = None,
+            run_manager: CallbackManagerForRetrieverRun | None = None
     ) -> List[Document]:
-        return self._get_relevant_documents(query, run_manager=run_manager)
+        return self._get_relevant_documents(query, filters=filters, run_manager=run_manager)
+
+    async def ainvoke(
+            self,
+            query: str,
+            filters: Optional[Filter] = None,
+            run_manager: CallbackManagerForRetrieverRun | None = None
+    ) -> List[Document]:
+        return await self._aget_relevant_documents(query, filters=filters, run_manager=run_manager)

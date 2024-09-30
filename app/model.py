@@ -22,6 +22,8 @@ class User(Base):
 
     id = Column(String, primary_key=True, index=True, default=lambda: str(uuid4()))
     name = Column(String, index=True)
+    email = Column(String, unique=True, index=True)  # Nuevo campo para el correo electrónico
+    hashed_password = Column(String)  # Nuevo campo para la contraseña hasheada
     group_id = Column(String, index=True)
     session_id = Column(String, unique=True, index=True, default=lambda: str(uuid4()))
     chat_status = Column(String)  # Nuevo campo para indicar el estado de chat

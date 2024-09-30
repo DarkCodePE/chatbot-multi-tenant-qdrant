@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.database import init_db
 from app.schema.schema import UserResponse, CourseResponse, TopicResponse, DocumentCreate, CourseCreate, UserLogin, \
     TopicCreate, CourseAssignment, QuestionV2, Feedback, DocumentAddToTopic, ChatSessionStart, ChatSessionEnd, \
-    ChatListResponse, UploadDocument, ProcessedDocumentResponse
+    ChatListResponse, UploadDocument, ProcessedDocumentResponse, UserCreate
 from app.model import User as UserModel, Course as CourseModel, Topic as TopicModel, Question as QuestionModel, \
     ChatSession, Document as DocumentModel, Course, Topic, ProcessedDocument
 from app.services.services import UserService, CourseService, TopicService, QuestionService
@@ -55,6 +55,11 @@ def health_check():
 @app.post("/users/login", response_model=UserResponse)
 async def user_login(user: UserLogin, db: Session = Depends(database.get_db)):
     return await user_service.login_user(user, db)
+
+
+@app.post("/users/register", response_model=UserResponse)
+async def register(user: UserCreate, db: Session = Depends(database.get_db)):
+    return await user_service.register_user(user, db)
 
 
 @app.post("/courses", response_model=CourseResponse)

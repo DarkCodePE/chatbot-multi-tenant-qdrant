@@ -20,7 +20,7 @@ from app.retriever.custom_qdrant_retriever import CustomQdrantRetriever, CustomQ
 from app.retriever.document_list_retriever import DocumentListRetriever
 from app.schema.schema import UserLogin, UserResponse, DocumentCreate, CourseAssignment, CourseCreate, CourseResponse, \
     TopicCreate, TopicResponse, Question, Feedback, QuestionV2, DocumentAddToTopic, ChatSessionStart, ChatListResponse, \
-    ChatListItem, UploadDocument
+    ChatListItem, UploadDocument, UserCreate
 from sqlalchemy.orm import Session
 from app.model import User as UserModel
 from langchain_core.vectorstores import VectorStoreRetriever
@@ -37,6 +37,8 @@ from langsmith.wrappers import wrap_openai
 import openai
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
+from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+from app.services.util import get_password_hash, verify_password
 
 load_dotenv()
 logging.basicConfig(level=logging.DEBUG,
@@ -81,32 +83,42 @@ class UserService:
     def __init__(self, database):
         self.database = database
 
-    async def login_user(self, user: UserLogin, db: Session):
-        db_user = self.database.get_user_by_name(db, user.name)
-        if db_user is None:
-            db_user = UserModel(
-                id=str(uuid4()),
-                name=user.name,
-                session_id=str(uuid4())
-            )
-            db_user = self.database.create_user(db, db_user)
-        else:
-            db_user.session_id = str(uuid4())
-            db.commit()
+    async def register_user(self, user: UserCreate, db: Session):
+        db_user = self.database.get_user_by_email(db, user.email)
+        if db_user:
+            raise HTTPException(status_code=400, detail="Email already registered")
 
-        # Iniciar la tarea de sincronización de documentos
-        #from app.event.tasks import sync_user_documents
-        #sync_user_documents.delay(db_user.id)
-
-        user_courses = [course.name for course in db_user.courses]
-
-        return UserResponse(
-            id=db_user.id,
-            name=db_user.name,
-            session_id=db_user.session_id,
-            courses=user_courses,
-            #course_collections=course_collections
+        hashed_password = get_password_hash(user.password)
+        new_user = UserModel(
+            name=user.name,
+            email=user.email,
+            hashed_password=hashed_password,
+            group_id="1",
+            session_id=str(uuid4())
         )
+        db_user = self.database.create_user(db, new_user)
+
+        return self.create_user_response(db_user)
+
+    async def login_user(self, user: UserLogin, db: Session):
+        db_user = self.database.get_user_by_email(db, user.email)
+        if db_user is None or not verify_password(user.password, db_user.hashed_password):
+            raise HTTPException(status_code=401, detail="Incorrect email or password")
+
+        db_user.session_id = str(uuid4())
+        db.commit()
+
+        return self.create_user_response(db_user)
+
+    def create_user_response(self, db_user):
+        user_courses = [course.name for course in db_user.courses]
+        return {
+            "id": db_user.id,
+            "name": db_user.name,
+            "email": db_user.email,
+            "session_id": db_user.session_id,
+            "courses": user_courses
+        }
 
     def get_user(self, user_id: str, db: Session):
         db_user = self.database.get_user_by_id(db, user_id)
@@ -443,42 +455,33 @@ class QuestionService:
             if not chat_session:
                 raise HTTPException(status_code=404, detail="Chat session not found")
 
+            # Definir los filtros basados en course_id y topic_id
+            filters = Filter(
+                must=[
+                    FieldCondition(key="course_id", match=MatchValue(value=chat_session.course_id))
+                ]
+            )
+
+            # Registrar los filtros para depuración
+            logging.debug(
+                f"Aplicando filtros: course_id={chat_session.course_id}, topic_id={chat_session.topic_id}")
+
             # Crear un retriever específico para este curso y tema
             #relevant_docs = self.retriever.get_relevant_documents(chat_session.course_id, chat_session.topic_id)
-            relevant_docs = await self.retriever.ainvoke(question.text)
+            relevant_docs = await self.retriever.ainvoke(question.text, filters=filters)
             logging.info(f"Retrieved {len(relevant_docs)} relevant documents")
+
             for doc in relevant_docs:
                 logging.info(
-                    f"Document ID: {doc.metadata['id']}, Score: {doc.metadata['score']}, Content preview: {doc.page_content[:100]}...")
+                    f"Document ID: {doc.metadata.get('id')}, "
+                    f"Course ID: {doc.metadata.get('course_id')}, "
+                    f"Topic ID: {doc.metadata.get('topic_id')}, "
+                    f"Score: {doc.metadata.get('score')}, "
+                    f"Content preview: {doc.page_content[:100]}..."
+                )
+
             # Crear un DocumentListRetriever con los documentos relevantes
             document_list_retriever = DocumentListRetriever(relevant_docs)
-
-            # Búsqueda con el retriever personalizado
-            # custom_results = await retriever.aget_relevant_documents(question.text)
-            # logging.info(f"Custom retriever results: {custom_results}")
-
-            # Búsqueda directa con Qdrant
-            # qdrant_results = self.qdrant_client.search(
-            #     collection_name=TOPIC_COLLECTION,
-            #     query_vector=self.embeddings.embed_query(question.text),
-            #     query_filter=models.Filter(
-            #         must=[
-            #             models.FieldCondition(key="type", match=models.MatchValue(value="document")),
-            #             models.FieldCondition(key="course_id", match=models.MatchValue(value=chat_session.course_id)),
-            #             models.FieldCondition(key="topic_id", match=models.MatchValue(value=chat_session.topic_id))
-            #         ]
-            #     ),
-            #     limit=5
-            # )
-            # logging.info(f"Qdrant search results: {qdrant_results}")
-
-            # Comparar resultados
-            # custom_ids = set(doc.metadata.get('id') for doc in custom_results)
-            # qdrant_ids = set(result.id for result in qdrant_results)
-            # common_ids = custom_ids.intersection(qdrant_ids)
-            # logging.info(f"Common document IDs: {common_ids}")
-            # logging.info(f"Documents only in custom results: {custom_ids - qdrant_ids}")
-            # logging.info(f"Documents only in Qdrant results: {qdrant_ids - custom_ids}")
 
             # Usar los resultados del retriever personalizado para generar la respuesta
             response = await self.generate_response(question.text, chat_session, document_list_retriever)
@@ -506,50 +509,6 @@ class QuestionService:
         except Exception as e:
             logging.error(f"Error processing question: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
-
-    @traceable(run_type="retriever")
-    def create_filtered_retriever(self, course_id: str, topic_id: str) -> VectorStoreRetriever:
-        filter_condition = {"must": [{"key": "type", "match": {"value": "document"}}]}
-
-        if course_id:
-            filter_condition["must"].append({"key": "course_id", "match": {"value": course_id}})
-        if topic_id:
-            filter_condition["must"].append({"key": "topic_id", "match": {"value": topic_id}})
-
-        return self.vector_store.as_retriever(
-            search_type="similarity",
-            search_kwargs={
-                "k": 5,
-                "filter": filter_condition,
-            }
-        )
-
-    async def sync_documents(self, course_id: str, topic_id: str, db: Session):
-        try:
-            rag_instance = await RAGSingleton.get_instance()
-            # Obtener la lista de documentos procesados para este curso
-            processed_docs = (db.query(ProcessedDocument)
-                              .filter(ProcessedDocument.course_id == course_id)
-                              .all())
-            logging.info(f"Procesando... {len(processed_docs)} documentos para el curso {course_id}")
-            if GOOGLE_DRIVE_FOLDER_ID:
-                #success = await rag_instance.process_google_drive_folder(GOOGLE_DRIVE_FOLDER_ID, course_id, topic_id)
-                success, new_processed_docs = await rag_instance.process_google_drive_documents(GOOGLE_DRIVE_FOLDER_ID,
-                                                                                                course_id,
-                                                                                                processed_docs)
-                if success:
-                    # Guardar los nuevos documentos procesados en la base de datos
-                    for doc in new_processed_docs:
-                        db.add(doc)
-                    db.commit()
-                    logging.info(f"Documentos actualizados para curso {course_id} y tema {topic_id}")
-                else:
-                    logging.warning(f"No se pudieron actualizar documentos para curso {course_id} y tema {topic_id}")
-            else:
-                logging.warning("GOOGLE_DRIVE_FOLDER_ID no está configurado. No se sincronizaron documentos.")
-
-        except Exception as e:
-            logging.error(f"Error al sincronizar documentos: {str(e)}")
 
     @traceable(metadata={"model": "gpt-4o-mini"})
     async def generate_response(self, question: str, chat_session: ChatSession, retriever: BaseRetriever):

@@ -3,19 +3,26 @@ from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, EmailStr
+
+
+class UserCreate(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
 
 
 class UserLogin(BaseModel):
-    name: str
-    group_id: Optional[str] = None
+    email: EmailStr
+    password: str
 
 
 class UserResponse(BaseModel):
     id: str
     name: str
+    email: EmailStr
     session_id: str
-    group_id: Optional[str] = None
+    courses: list[str]
 
 
 class ChatSessionStart(BaseModel):
@@ -100,9 +107,6 @@ class ProcessedDocumentResponse(BaseModel):
     file_name: str
     last_modified: datetime
     qdrant_point_id: str
-
-    class Config:
-        orm_mode = True
 
 
 class CourseAssignment(BaseModel):

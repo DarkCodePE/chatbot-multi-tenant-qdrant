@@ -38,3 +38,5 @@ redis
 starlette
 scipy
 celery
+passlib[bcrypt]
+pydantic[email]

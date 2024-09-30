@@ -11,6 +11,8 @@ from psycopg2 import connect, sql
 from app.model import User, Course, Topic, Question, Feedback, ChatSession
 import logging
 
+from app.services.util import get_password_hash
+
 logging.basicConfig(level=logging.DEBUG)
 
 # Importar aquí los modelos para evitar problemas de dependencia circular
@@ -87,17 +89,19 @@ class Database:
             db.close()
 
     def create_user(self, db: Session, user: User):
-        db_user = User(id=user.id, name=user.name, session_id=user.session_id)
-        db.add(db_user)
+        db.add(user)
         db.commit()
-        db.refresh(db_user)
-        return db_user
+        db.refresh(user)
+        return user
 
     def get_user_by_id(self, db: Session, user_id: str):
         return db.query(User).filter(User.id == user_id).first()
 
     def get_user_by_name(self, db: Session, name: str):
         return db.query(User).filter(User.name == name).first()
+
+    def get_user_by_email(self, db: Session, email: str):
+        return db.query(User).filter(User.email == email).first()
 
     def create_course(self, db: Session, course: Course):
         db_course = Course(id=course.id, name=course.name)
