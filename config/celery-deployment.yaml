@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: celery-worker
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: celery-worker
@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
       - name: celery-worker
-        image: orlandogtp/fastapi-chatbot:v1.1.5  # Asegúrate de usar la misma imagen que tu aplicación FastAPI
+        image: orlandogtp/fastapi-chatbot:latest   # Asegúrate de usar la misma imagen que tu aplicación FastAPI
         command: ["celery"]
         args: ["-A", "app.celery_app", "worker", "--loglevel=DEBUG", "-P", "solo"]
         env:
