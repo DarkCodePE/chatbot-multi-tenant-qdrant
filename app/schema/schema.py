@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class UserCreate(BaseModel):
@@ -47,7 +47,11 @@ class FeedbackCreate(BaseModel):
 
 
 class CourseCreate(BaseModel):
-    name: str
+    name: str = Field(..., min_length=3, max_length=200)
+
+
+class CourseUpdate(BaseModel):
+    name: str = Field(..., min_length=3, max_length=200)
 
 
 class TopicCreate(BaseModel):

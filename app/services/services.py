@@ -20,7 +20,7 @@ from app.retriever.custom_qdrant_retriever import CustomQdrantRetriever, CustomQ
 from app.retriever.document_list_retriever import DocumentListRetriever
 from app.schema.schema import UserLogin, UserResponse, DocumentCreate, CourseAssignment, CourseCreate, CourseResponse, \
     TopicCreate, TopicResponse, Question, Feedback, QuestionV2, DocumentAddToTopic, ChatSessionStart, ChatListResponse, \
-    ChatListItem, UploadDocument, UserCreate
+    ChatListItem, UploadDocument, UserCreate, CourseUpdate
 from sqlalchemy.orm import Session
 from app.model import User as UserModel
 from langchain_core.vectorstores import VectorStoreRetriever
@@ -186,9 +186,10 @@ class CourseService:
             course = self.database.get_course_by_id(db, file.course_id)
             if course is None:
                 raise HTTPException(status_code=404, detail="Course not found")
-            new_processed_doc = await topic_repository.upload_document_to_drive(file.course_id, course.google_drive_folder_id,
-                                                                          file.file_name, file.file_content,
-                                                                          file.mime_type)
+            new_processed_doc = await topic_repository.upload_document_to_drive(file.course_id,
+                                                                                course.google_drive_folder_id,
+                                                                                file.file_name, file.file_content,
+                                                                                file.mime_type)
             logging.info(f"Documento subido: {new_processed_doc}")
             db.add(new_processed_doc)
             db.commit()
@@ -261,6 +262,58 @@ class CourseService:
         course.topics.append(topic)
         db.commit()
         return {"message": f"Topic {topic.name} assigned to course {course.name}"}
+
+    async def update_course(self, course_id: str, course_update: CourseUpdate, db: Session):
+        try:
+            course = self.database.get_course_by_id(db, course_id)
+            if not course:
+                raise HTTPException(status_code=404, detail="Course not found")
+
+            # Actualizar el nombre del curso
+            course.name = course_update.name
+
+            # Opcional: Actualizar la carpeta en Google Drive si el nombre cambia
+            if course_update.name != course.name:
+                topic_repository = TopicRepository(QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY),
+                                                   OpenAIEmbeddings())
+                folder_metadata = {'name': course_update.name}
+                updated_folder = topic_repository.drive_service.files().update(
+                    fileId=course.google_drive_folder_id,
+                    body=folder_metadata
+                ).execute()
+                logging.info(f"Carpeta de Google Drive actualizada: {updated_folder.get('id')}")
+
+            db.commit()
+            db.refresh(course)
+            return CourseResponse.from_orm(course)
+        except HTTPException as e:
+            raise e
+        except Exception as e:
+            logging.error(f"Error al actualizar el curso: {str(e)}")
+            db.rollback()
+            raise HTTPException(status_code=500, detail=str(e))
+
+    async def delete_course(self, course_id: str, db: Session):
+        try:
+            course = self.database.get_course_by_id(db, course_id)
+            if not course:
+                raise HTTPException(status_code=404, detail="Course not found")
+
+            # Eliminar la carpeta en Google Drive
+            topic_repository = TopicRepository(QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY), OpenAIEmbeddings())
+            topic_repository.drive_service.files().delete(fileId=course.google_drive_folder_id).execute()
+            logging.info(f"Carpeta de Google Drive eliminada: {course.google_drive_folder_id}")
+
+            # Eliminar el curso de la base de datos
+            db.delete(course)
+            db.commit()
+            return {"message": f"Course '{course.name}' has been deleted successfully."}
+        except HTTPException as e:
+            raise e
+        except Exception as e:
+            logging.error(f"Error al eliminar el curso: {str(e)}")
+            db.rollback()
+            raise HTTPException(status_code=500, detail=str(e))
 
     async def update_course_documents(self, course_id: str, db: Session):
         course = db.query(Course).filter(Course.id == course_id).first()

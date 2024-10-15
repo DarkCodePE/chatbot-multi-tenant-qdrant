@@ -1,5 +1,5 @@
 from http.client import HTTPException
-from typing import List
+from typing import List, Dict
 
 from celery.result import AsyncResult
 from fastapi import FastAPI, Depends, BackgroundTasks, Form, File, UploadFile
@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.database import init_db
 from app.schema.schema import UserResponse, CourseResponse, TopicResponse, DocumentCreate, CourseCreate, UserLogin, \
     TopicCreate, CourseAssignment, QuestionV2, Feedback, DocumentAddToTopic, ChatSessionStart, ChatSessionEnd, \
-    ChatListResponse, UploadDocument, ProcessedDocumentResponse, UserCreate
+    ChatListResponse, UploadDocument, ProcessedDocumentResponse, UserCreate, CourseUpdate
 from app.model import User as UserModel, Course as CourseModel, Topic as TopicModel, Question as QuestionModel, \
     ChatSession, Document as DocumentModel, Course, Topic, ProcessedDocument
 from app.services.services import UserService, CourseService, TopicService, QuestionService
@@ -70,6 +70,30 @@ async def create_course(course: CourseCreate, db: Session = Depends(database.get
 @app.get("/courses", response_model=List[CourseResponse])
 def get_courses(db: Session = Depends(database.get_db)):
     return course_service.get_all_courses(db)
+
+
+@app.put("/courses/{course_id}", response_model=CourseResponse)
+async def update_course(course_id: str, course_update: CourseUpdate, db: Session = Depends(database.get_db)):
+    try:
+        updated_course = await course_service.update_course(course_id, course_update, db)
+        return updated_course
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logging.error(f"Error al actualizar el curso: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+@app.delete("/courses/{course_id}", response_model=Dict[str, str])
+async def delete_course(course_id: str, db: Session = Depends(database.get_db)):
+    try:
+        result = await course_service.delete_course(course_id, db)
+        return result
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logging.error(f"Error al eliminar el curso: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 @app.post("/topics", response_model=TopicResponse)
