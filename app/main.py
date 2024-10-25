@@ -1,3 +1,4 @@
+import io
 from http.client import HTTPException
 from typing import List, Dict
 
@@ -62,6 +63,21 @@ async def register(user: UserCreate, db: Session = Depends(database.get_db)):
     return await user_service.register_user(user, db)
 
 
+@app.get("/courses/{course_id}/unassigned-users", response_model=List[UserResponse])
+async def get_unassigned_users(course_id: str, db: Session = Depends(database.get_db)):
+    """
+    Endpoint para obtener usuarios no asignados a un curso específico.
+
+    Args:
+        course_id: ID del curso
+        db: Sesión de base de datos
+
+    Returns:
+        Lista de usuarios no asignados al curso
+    """
+    return await user_service.get_unassigned_users(course_id, db)
+
+
 @app.post("/courses", response_model=CourseResponse)
 async def create_course(course: CourseCreate, db: Session = Depends(database.get_db)):
     return await course_service.create_course(course, db)
@@ -123,6 +139,64 @@ async def upload_document(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/download-document/{document_id}")
+async def download_document(
+        document_id: str,
+        db: Session = Depends(database.get_db)
+):
+    """
+    Endpoint para descargar un documento.
+    No requiere validación de usuario ya que es manejado por administradores.
+    """
+    try:
+        # Descargar el documento directamente
+        file_content, file_name = await course_service.download_document(
+            document_id, db
+        )
+
+        # Crear un stream para el archivo
+        stream = io.BytesIO(file_content)
+
+        return StreamingResponse(
+            stream,
+            media_type='application/octet-stream',
+            headers={
+                'Content-Disposition': f'attachment; filename="{file_name}"'
+            }
+        )
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error downloading document: {str(e)}"
+        )
+
+
+@app.delete("/delete-document/{document_id}")
+async def delete_document(
+        document_id: str,
+        db: Session = Depends(database.get_db)
+) -> Dict[str, str]:
+    """
+    Endpoint para eliminar un documento.
+    No requiere validación de usuario ya que es manejado por administradores.
+    """
+    try:
+        # Eliminar el documento directamente
+        result = await course_service.delete_document(document_id, db)
+        return result
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error deleting document: {str(e)}"
+        )
+
+
 @app.post("/users/{user_id}/documents")
 async def add_user_document(user_id: str, document: DocumentCreate, db: Session = Depends(database.get_db)):
     return await user_service.add_user_document(user_id, document, db)
@@ -136,6 +210,54 @@ async def get_course_files(course_id: str, db: Session = Depends(database.get_db
 
     files = db.query(ProcessedDocument).filter(ProcessedDocument.course_id == course_id).all()
     return files
+
+
+@app.get("/courses/{course_id}", response_model=CourseResponse)
+async def get_course_detail(course_id: str, db: Session = Depends(database.get_db)):
+    """
+    Endpoint para obtener los detalles de un curso específico, incluyendo sus usuarios.
+    """
+    try:
+        course = db.query(CourseModel).filter(CourseModel.id == course_id).first()
+        if not course:
+            raise HTTPException(status_code=404, detail="Course not found")
+
+        return CourseResponse(
+            id=course.id,
+            name=course.name,
+            google_drive_folder_id=course.google_drive_folder_id,
+            created_at=course.created_at,
+            updated_at=course.updated_at,
+            users=[{
+                'id': user.id,
+                'name': user.name,
+                'email': user.email
+            } for user in course.users]
+        )
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logging.error(f"Error fetching course details: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/courses/{course_id}/users/{user_id}")
+async def remove_user_from_course(
+        course_id: str,
+        user_id: str,
+        db: Session = Depends(database.get_db)
+):
+    """
+    Endpoint para desasignar un usuario de un curso.
+    """
+    try:
+        result = await course_service.remove_user_from_course(course_id, user_id, db)
+        return result
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logging.error(f"Error removing user from course: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/users/{user_id}/courses", response_model=List[CourseResponse])

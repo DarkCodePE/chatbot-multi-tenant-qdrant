@@ -1,10 +1,12 @@
 # app/services.py
+import io
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import List, Any
 from uuid import uuid4
 from fastapi import HTTPException, BackgroundTasks
+from googleapiclient.http import MediaIoBaseDownload
 from langchain.schema import Document
 from langchain.schema import HumanMessage
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -15,12 +17,12 @@ from app.generator.rag import RAG, TopicInfo
 import logging
 import asyncio
 from app.model import User as UserModel, Course as CourseModel, Topic as TopicModel, Question as QuestionModel, \
-    ChatSession, Document as DocumentModel, Course, Topic, ProcessedDocument
+    ChatSession, Document as DocumentModel, Course, Topic, ProcessedDocument, user_course
 from app.retriever.custom_qdrant_retriever import CustomQdrantRetriever, CustomQdrantRetrieverConfig
 from app.retriever.document_list_retriever import DocumentListRetriever
 from app.schema.schema import UserLogin, UserResponse, DocumentCreate, CourseAssignment, CourseCreate, CourseResponse, \
     TopicCreate, TopicResponse, Question, Feedback, QuestionV2, DocumentAddToTopic, ChatSessionStart, ChatListResponse, \
-    ChatListItem, UploadDocument, UserCreate, CourseUpdate
+    ChatListItem, UploadDocument, UserCreate, CourseUpdate, UserBase
 from sqlalchemy.orm import Session
 from app.model import User as UserModel
 from langchain_core.vectorstores import VectorStoreRetriever
@@ -82,6 +84,56 @@ class RAGSingleton:
 class UserService:
     def __init__(self, database):
         self.database = database
+
+    async def get_unassigned_users(self, course_id: str, db: Session) -> List[UserResponse]:
+        """
+        Obtiene la lista de usuarios que no están asignados a un curso específico.
+
+        Args:
+            course_id: ID del curso
+            db: Sesión de base de datos
+
+        Returns:
+            Lista de usuarios no asignados al curso
+        """
+        try:
+            # Verificar que el curso existe
+            course = db.query(CourseModel).filter(CourseModel.id == course_id).first()
+            if not course:
+                raise HTTPException(status_code=404, detail="Course not found")
+
+            # Subconsulta para obtener los IDs de usuarios ya asignados al curso
+            assigned_users = (
+                db.query(UserModel.id)
+                .join(user_course)
+                .filter(user_course.c.course_id == course_id)
+                .subquery()
+            )
+
+            # Consulta principal para obtener usuarios no asignados
+            unassigned_users = (
+                db.query(UserModel)
+                .filter(UserModel.id.notin_(assigned_users))
+                .all()
+            )
+
+            # Transformar los resultados al formato de respuesta
+            return [
+                UserResponse(
+                    id=user.id,
+                    name=user.name,
+                    email=user.email,
+                    group_id=user.group_id,
+                    session_id=user.session_id,
+                    courses=[course.name for course in user.courses]
+                ) for user in unassigned_users
+            ]
+
+        except HTTPException as e:
+            raise e
+        except Exception as e:
+            logging.error(f"Error getting unassigned users: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     async def register_user(self, user: UserCreate, db: Session):
         db_user = self.database.get_user_by_email(db, user.email)
@@ -177,6 +229,36 @@ class CourseService:
     def __init__(self, database):
         self.database = database
 
+    async def remove_user_from_course(self, course_id: str, user_id: str, db: Session):
+        """
+        Desasigna un usuario de un curso.
+        """
+        try:
+            course = db.query(CourseModel).filter(CourseModel.id == course_id).first()
+            if not course:
+                raise HTTPException(status_code=404, detail="Course not found")
+
+            user = db.query(UserModel).filter(UserModel.id == user_id).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            if user in course.users:
+                course.users.remove(user)
+                db.commit()
+                return {"message": f"User {user.name} removed from course {course.name}"}
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="User is not assigned to this course"
+                )
+
+        except HTTPException as e:
+            raise e
+        except Exception as e:
+            db.rollback()
+            logging.error(f"Error removing user from course: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
+
     async def upload_document(self, file: UploadDocument, db: Session):
         try:
             # Inicializar el TopicRepository para acceder a los métodos de Google Drive
@@ -198,6 +280,96 @@ class CourseService:
         except Exception as e:
             logging.error(f"Error al subir el documento: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
+
+    async def download_document(self, document_id: str, db: Session) -> tuple[bytes, str]:
+        """
+        Descarga un documento desde Google Drive.
+
+        Args:
+            document_id: ID del documento en la base de datos
+            db: Sesión de base de datos
+
+        Returns:
+            Tupla con el contenido del archivo y el nombre del archivo
+        """
+        try:
+            # Obtener el documento procesado de la base de datos
+            processed_doc = db.query(ProcessedDocument).filter(
+                ProcessedDocument.id == document_id
+            ).first()
+
+            if not processed_doc:
+                raise HTTPException(status_code=404, detail="Document not found")
+
+            topic_repository = TopicRepository(QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY), OpenAIEmbeddings())
+            # Obtener el archivo desde Google Drive
+            request = topic_repository.drive_service.files().get_media(
+                fileId=processed_doc.google_file_id
+            )
+
+            file_metadata = topic_repository.drive_service.files().get(
+                fileId=processed_doc.google_file_id,
+                fields='name, mimeType'
+            ).execute()
+
+            # Descargar el contenido del archivo
+            file_content = io.BytesIO()
+            downloader = MediaIoBaseDownload(file_content, request)
+
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+
+            return file_content.getvalue(), file_metadata.get('name', 'downloaded_file')
+
+        except Exception as e:
+            logging.error(f"Error downloading document: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Error downloading document: {str(e)}")
+
+    async def delete_document(self, document_id: str, db: Session) -> dict:
+        """
+        Elimina un documento de Google Drive y de la base de datos.
+
+        Args:
+            document_id: ID del documento en la base de datos
+            db: Sesión de base de datos
+
+        Returns:
+            Diccionario con mensaje de confirmación
+        """
+        try:
+            # Obtener el documento procesado de la base de datos
+            processed_doc = db.query(ProcessedDocument).filter(
+                ProcessedDocument.id == document_id
+            ).first()
+
+            if not processed_doc:
+                raise HTTPException(status_code=404, detail="Document not found")
+
+            topic_repository = TopicRepository(QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY), OpenAIEmbeddings())
+            # Eliminar el archivo de Google Drive
+            try:
+                topic_repository.drive_service.files().delete(
+                    fileId=processed_doc.google_file_id
+                ).execute()
+            except Exception as e:
+                logging.error(f"Error deleting file from Google Drive: {str(e)}")
+                # Continuamos incluso si falla la eliminación en Google Drive
+                # para mantener la consistencia en nuestra base de datos
+
+            # Eliminar el registro de la base de datos
+            db.delete(processed_doc)
+            db.commit()
+
+            return {
+                "message": "Document deleted successfully",
+                "document_id": document_id
+            }
+
+        except Exception as e:
+            db.rollback()
+            logging.error(f"Error deleting document: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Error deleting document: {str(e)}")
 
     async def create_course(self, course: CourseCreate, db: Session):
         try:
@@ -277,10 +449,12 @@ class CourseService:
                 topic_repository = TopicRepository(QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY),
                                                    OpenAIEmbeddings())
                 folder_metadata = {'name': course_update.name}
-                updated_folder = topic_repository.drive_service.files().update(
+                updated_folder = (topic_repository.drive_service
+                                  .files()
+                                  .update(
                     fileId=course.google_drive_folder_id,
                     body=folder_metadata
-                ).execute()
+                ).execute())
                 logging.info(f"Carpeta de Google Drive actualizada: {updated_folder.get('id')}")
 
             db.commit()
@@ -301,7 +475,10 @@ class CourseService:
 
             # Eliminar la carpeta en Google Drive
             topic_repository = TopicRepository(QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY), OpenAIEmbeddings())
-            topic_repository.drive_service.files().delete(fileId=course.google_drive_folder_id).execute()
+            (topic_repository.drive_service
+             .files()
+             .delete(fileId=course.google_drive_folder_id)
+             .execute())
             logging.info(f"Carpeta de Google Drive eliminada: {course.google_drive_folder_id}")
 
             # Eliminar el curso de la base de datos

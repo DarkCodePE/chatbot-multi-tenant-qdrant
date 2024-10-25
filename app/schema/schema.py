@@ -98,9 +98,20 @@ class CourseBase(BaseModel):
     name: str
 
 
+class UserBase(BaseModel):
+    id: str
+    name: str
+    email: str
+    model_config = ConfigDict(from_attributes=True)
+
+
 class CourseResponse(CourseBase):
     id: str
     name: str
+    google_drive_folder_id: Optional[str]
+    created_at: datetime
+    updated_at: Optional[datetime]
+    users: List[UserBase] = []
     model_config = ConfigDict(from_attributes=True)
 
 

@@ -10,13 +10,17 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 25%  # Máximo de pods no disponibles durante la actualización
-      maxSurge: 1          # Número máximo de pods adicionales creados durante la actualización
+      maxUnavailable: 0  # Máximo de pods no disponibles durante la actualización
+      maxSurge: 100%          # Número máximo de pods adicionales creados durante la actualización
   template:
     metadata:
       labels:
         app: fastapi-chatbot
     spec:
+      initContainers:
+      - name: wait-for-postgres
+        image: busybox
+        command: [ 'sh', '-c', 'until nc -z postgresql 5432; do echo waiting for postgres; sleep 5; done;' ]
       containers:
       - name: fastapi-chatbot
         image: orlandogtp/fastapi-chatbot:v1.3.1
@@ -28,13 +32,13 @@ spec:
           httpGet:
             path: /health
             port: 8000
-          initialDelaySeconds: 5
+          initialDelaySeconds: 30
           periodSeconds: 10
         livenessProbe:
           httpGet:
             path: /health
             port: 8000
-          initialDelaySeconds: 15
+          initialDelaySeconds: 60
           periodSeconds: 20
         env:
         - name: OPENAI_API_KEY
