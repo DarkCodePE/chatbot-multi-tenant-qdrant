@@ -811,51 +811,88 @@ class QuestionService:
             raise
 
     async def start_chat_session(self, session_start: ChatSessionStart, db: Session):
-        user = db.query(UserModel).filter(UserModel.id == session_start.user_id).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
+        try:
+            # Iniciar transacción
+            db.begin_nested()  # Crear un savepoint
 
-        # Crear un tópico con un título temporal
-        temp_topic = TopicCreate(
-            id=str(uuid4()),
-            name=f"Chat Session {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            description=session_start.initial_question,
-            course_id=session_start.course_id
-        )
-        created_topic = await self.topic_service.create_topic(temp_topic, db)
+            # Verificar usuario
+            user = db.query(UserModel).filter(UserModel.id == session_start.user_id).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
 
-        chat_session = self.database.create_chat_session(
-            db,
-            user_id=session_start.user_id,
-            course_id=session_start.course_id,
-            topic_id=created_topic.id
-        )
+            # Crear tópico temporal
+            temp_topic = TopicCreate(
+                id=str(uuid4()),
+                name=f"Chat Session {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                description=session_start.initial_question,
+                course_id=session_start.course_id
+            )
 
-        # Sincronizar documentos al inicio de la sesión
-        #await self.sync_documents(session_start.course_id, created_topic.id)
+            try:
+                created_topic = await self.topic_service.create_topic(temp_topic, db)
+            except Exception as e:
+                db.rollback()
+                logging.error(f"Error creating topic: {str(e)}")
+                raise HTTPException(status_code=500, detail="Error creating chat topic")
 
-        from app.event.tasks import generate_and_update_title
-        # Iniciar la tarea de Celery para generar el título
-        logging.info(f"Enviando tarea generate_and_update_title para topic_id: {created_topic.id}")
-        task = generate_and_update_title.delay(created_topic.id, session_start.initial_question)
-        #print(task.get())
-        #logging.info(f"Task ID: {task.get()}")
-        #logging.info(f"Task ID: {task.id}")
-        # Procesar la pregunta inicial
-        initial_question = QuestionV2(
-            text=session_start.initial_question,
-            user_id=session_start.user_id,
-            chat_session_id=chat_session.id
-        )
-        answer = await self.process_question(initial_question, db)
+            # Crear sesión de chat
+            try:
+                chat_session = self.database.create_chat_session(
+                    db,
+                    user_id=session_start.user_id,
+                    course_id=session_start.course_id,
+                    topic_id=created_topic.id
+                )
+            except Exception as e:
+                db.rollback()
+                logging.error(f"Error creating chat session: {str(e)}")
+                raise HTTPException(status_code=500, detail="Error creating chat session")
 
-        return {
-            "chat_session_id": chat_session.id,
-            "topic_id": created_topic.id,
-            "topic_title": created_topic.name,
-            "initial_answer": answer,
-            "title_task_id": task.id
-        }
+            # Procesar pregunta inicial
+            try:
+                initial_question = QuestionV2(
+                    text=session_start.initial_question,
+                    user_id=session_start.user_id,
+                    chat_session_id=chat_session.id
+                )
+                answer = await self.process_question(initial_question, db)
+            except Exception as e:
+                db.rollback()
+                logging.error(f"Error processing initial question: {str(e)}")
+                raise HTTPException(status_code=500, detail="Error processing initial question")
+
+            # Iniciar tarea de generación de título
+            try:
+                from app.event.tasks import generate_and_update_title
+                logging.info(f"Sending generate_and_update_title task for topic_id: {created_topic.id}")
+                task = generate_and_update_title.delay(created_topic.id, session_start.initial_question)
+            except Exception as e:
+                logging.error(f"Error starting title generation task: {str(e)}")
+                # No hacemos rollback aquí porque la generación del título es una tarea secundaria
+                task = None
+
+            # Si todo fue exitoso, hacer commit de la transacción
+            db.commit()
+
+            return {
+                "chat_session_id": chat_session.id,
+                "topic_id": created_topic.id,
+                "topic_title": created_topic.name,
+                "initial_answer": answer,
+                "title_task_id": task.id if task else None
+            }
+
+        except HTTPException as he:
+            # Propagar excepciones HTTP
+            raise he
+        except Exception as e:
+            # Rollback en caso de cualquier otro error
+            db.rollback()
+            logging.error(f"Unexpected error in start_chat_session: {str(e)}")
+            raise HTTPException(status_code=500, detail="Error starting chat session")
+        finally:
+            # Asegurarse de que la sesión está limpia
+            db.close()
 
     async def get_title_task_status(self, task_id: str):
         from app.event.tasks import generate_and_update_title

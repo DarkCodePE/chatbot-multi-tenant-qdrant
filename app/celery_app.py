@@ -5,8 +5,9 @@ import logging
 from celery.schedules import crontab
 from celery.signals import after_setup_logger
 
-redis_host = os.getenv('REDIS_HOST', 'localhost')
-#redis_host = os.getenv('REDIS_HOST', 'redis')
+#redis_host = os.getenv('REDIS_HOST', 'localhost')
+#logging.info("REDIS_HOST %s", redis_host)
+redis_host = os.getenv('REDIS_HOST', 'redis')
 redis_port = int(os.getenv('REDIS_PORT', 6379))
 redis_password = os.getenv('REDIS_PASSWORD')
 redis_url = f'redis://{redis_host}:{redis_port}/0'
