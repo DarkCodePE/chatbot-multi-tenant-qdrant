@@ -34,12 +34,25 @@ spec:
             port: 8000
           initialDelaySeconds: 30
           periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
         livenessProbe:
           httpGet:
             path: /health
             port: 8000
           initialDelaySeconds: 60
           periodSeconds: 20
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
         env:
         - name: OPENAI_API_KEY
           valueFrom:
@@ -130,3 +143,9 @@ spec:
           value: "postgresql"  # o el nombre de tu servicio de base de datos
         - name: DB_PORT
           value: "5432"
+        - name: DB_POOL_SIZE
+          value: "20"
+        - name: DB_MAX_OVERFLOW
+          value: "10"
+        - name: DB_POOL_TIMEOUT
+          value: "30"

@@ -33,6 +33,10 @@ POSTGRES_DB = os.getenv("DB_NAME")
 POSTGRES_USER = os.getenv("DB_USER")
 POSTGRES_PASSWORD = os.getenv("DB_PASSWORD")
 
+# Leer los parámetros del pool desde las variables de entorno
+DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", 5))
+DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", 10))
+DB_POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", 30))
 
 # Primero, nos conectamos al servidor PostgreSQL sin especificar la base de datos
 def create_database_if_not_exists():
@@ -67,7 +71,14 @@ create_database_if_not_exists()
 SQLALCHEMY_DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 #print(SQLALCHEMY_DATABASE_URL)
 # Configuración del engine y creación de la sesión
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    pool_size=DB_POOL_SIZE,
+    max_overflow=DB_MAX_OVERFLOW,
+    pool_timeout=DB_POOL_TIMEOUT,
+    pool_pre_ping=True  # Opcional: ayuda a mantener las conexiones activas
+)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
