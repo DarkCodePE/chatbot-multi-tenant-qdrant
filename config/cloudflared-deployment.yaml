@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared-tunnel
+  labels:
+    app: cloudflared-tunnel
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: cloudflared-tunnel
+  template:
+    metadata:
+      labels:
+        app: cloudflared-tunnel
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "2000"
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - cloudflared-tunnel
+            topologyKey: "kubernetes.io/hostname"
+      containers:
+      - name: cloudflared
+        image: cloudflare/cloudflared:latest
+        args:
+          - "tunnel"
+          - "--no-autoupdate"
+          - "run"
+          - "--token=eyJhIjoiNWI4ZDNlM2I2ZDE4OThkMmFhYWY3MWRlNmY2ODk2MjEiLCJ0IjoiY2RlNWJlYmItNDA4NS00YzYzLWI4ZjktYmRlODc4NTY1Y2JiIiwicyI6IllUVmhOVGMwTXpndE0ySmlOUzAwWXpJMkxUZ3dNVGt0T1Raa1ptUTFNalk0WkdaaiJ9"
+        ports:
+        - name: metrics
+          containerPort: 2000
+        env:
+        - name: TUNNEL_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: cloudflared-token
+              key: token
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "1"
+            memory: "1Gi"
+        readinessProbe:
+          tcpSocket:
+            port: metrics
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+        livenessProbe:
+          tcpSocket:
+            port: metrics
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          timeoutSeconds: 5
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 10"]
+        volumeMounts:
+        - name: config
+          mountPath: /etc/cloudflared
+        securityContext:
+          capabilities:
+            add:
+            - NET_ADMIN
+            - NET_RAW
+          runAsUser: 0
+      volumes:
+      - name: config
+        configMap:
+          name: cloudflared-config
+      terminationGracePeriodSeconds: 60

@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudflared-config
+data:
+  config.yaml: |
+    tunnel: cde5bebb-4085-4c63-b8f9-bde878565cbb
+    ingress:
+      # Regla específica para tu dominio
+      - hostname: orlandokuan.org
+        service: http://fastapi-chatbot-service:8000
+        originRequest:
+          connectTimeout: 30s
+          noTLSVerify: true
+          keepAliveConnections: 100
+          keepAliveTimeout: 1m30s
+          tcpKeepAlive: 30s
+          timeout: 1m
+      # Regla catch-all requerida
+      - service: http_status:404
+    metrics: 0.0.0.0:2000
+    protocol: quic
+    loglevel: info
+    transport-loglevel: info
+    retries: 5
+    grace-period: 30s
+    compression: true

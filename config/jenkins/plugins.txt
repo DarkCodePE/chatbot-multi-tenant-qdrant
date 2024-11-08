@@ -1,0 +1,9 @@
+git:latest
+workflow-aggregator:latest
+docker-workflow:latest
+kubernetes:latest
+kubernetes-cli:latest
+credentials-binding:latest
+git-parameter:latest
+pipeline-utility-steps:latest
+configuration-as-code:latest

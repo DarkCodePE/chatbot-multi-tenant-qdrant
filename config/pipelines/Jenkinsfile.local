@@ -1,0 +1,61 @@
+# Jenkinsfile.local
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_IMAGE = 'orlandogtp/fastapi-chatbot'
+        DOCKER_TAG = "${BUILD_NUMBER}"
+        KUSTOMIZE_PATH = './k8s/local'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    docker.build("${DOCKER_IMAGE}:${DOCKER_TAG}")
+                }
+            }
+        }
+
+        stage('Push to Local Registry') {
+            steps {
+                script {
+                    docker.withRegistry('http://localhost:5000') {
+                        docker.image("${DOCKER_IMAGE}:${DOCKER_TAG}").push()
+                        docker.image("${DOCKER_IMAGE}:${DOCKER_TAG}").push('latest')
+                    }
+                }
+            }
+        }
+
+        stage('Update Kustomize') {
+            steps {
+                sh """
+                    cd ${KUSTOMIZE_PATH}
+                    kustomize edit set image ${DOCKER_IMAGE}=localhost:5000/${DOCKER_IMAGE}:${DOCKER_TAG}
+                """
+            }
+        }
+
+        stage('Deploy to Local Kubernetes') {
+            steps {
+                sh """
+                    cd ${KUSTOMIZE_PATH}
+                    kustomize build . | kubectl apply -f -
+                """
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}

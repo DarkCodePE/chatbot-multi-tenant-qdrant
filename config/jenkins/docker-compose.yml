@@ -1,0 +1,31 @@
+# docker-compose.yml para Jenkins local
+version: '3.8'
+services:
+  jenkins:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jenkins-local
+    privileged: true
+    user: root
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    environment:
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - JENKINS_OPTS="--prefix=/jenkins"
+      - JAVA_OPTS="-Dhudson.footerURL=http://localhost:8080 -Xmx2g"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+      - $HOME/.kube:/var/jenkins_home/.kube
+    networks:
+      - jenkins-net
+
+networks:
+  jenkins-net:
+    driver: bridge
+
+volumes:
+  jenkins_home:
+    driver: local

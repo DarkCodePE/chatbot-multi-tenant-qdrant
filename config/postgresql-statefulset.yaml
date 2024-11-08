@@ -13,12 +13,12 @@ spec:
       labels:
         app: postgres
     spec:
-      terminationGracePeriodSeconds: 60
       containers:
       - name: postgresql
         image: postgres:16
         ports:
         - containerPort: 5432
+          name: postgresql
         env:
         - name: POSTGRES_DB
           valueFrom:
@@ -37,18 +37,9 @@ spec:
               key: DB_PASSWORD
         - name: PGDATA
           value: "/var/lib/postgresql/data/pgdata"
-        readinessProbe:
-          exec:
-            command: [ "pg_isready", "-U", "$(POSTGRES_USER)" ]
-          initialDelaySeconds: 20
-          periodSeconds: 10
-          timeoutSeconds: 5
-        livenessProbe:
-          exec:
-            command: [ "pg_isready", "-U", "$(POSTGRES_USER)" ]
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          timeoutSeconds: 5
+        volumeMounts:
+        - name: postgredbdata
+          mountPath: /var/lib/postgresql/data
         resources:
           requests:
             memory: "256Mi"
@@ -56,9 +47,24 @@ spec:
           limits:
             memory: "1Gi"
             cpu: "500m"
-        volumeMounts:
-        - name: postgredbdata
-          mountPath: /var/lib/postgresql/data
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - exec pg_isready -U "$(POSTGRES_USER)" -h localhost
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - exec pg_isready -U "$(POSTGRES_USER)" -h localhost
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
   volumeClaimTemplates:
   - metadata:
       name: postgredbdata
