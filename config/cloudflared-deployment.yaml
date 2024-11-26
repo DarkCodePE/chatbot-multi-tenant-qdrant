@@ -22,22 +22,15 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: "2000"
     spec:
-      affinity:
-        podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-          - labelSelector:
-              matchExpressions:
-              - key: app
-                operator: In
-                values:
-                - cloudflared-tunnel
-            topologyKey: "kubernetes.io/hostname"
+      nodeSelector:
+        role: app
       containers:
       - name: cloudflared
         image: cloudflare/cloudflared:latest
         args:
           - "tunnel"
-          - "--no-autoupdate"
+          - "--config"
+          - "/etc/cloudflared/config.yaml"
           - "run"
           - "--token=eyJhIjoiNWI4ZDNlM2I2ZDE4OThkMmFhYWY3MWRlNmY2ODk2MjEiLCJ0IjoiY2RlNWJlYmItNDA4NS00YzYzLWI4ZjktYmRlODc4NTY1Y2JiIiwicyI6IllUVmhOVGMwTXpndE0ySmlOUzAwWXpJMkxUZ3dNVGt0T1Raa1ptUTFNalk0WkdaaiJ9"
         ports:

@@ -64,7 +64,7 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
-                script {
+                script {DOCKER_IMAGE
                     try {
                         sh """
                             docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .

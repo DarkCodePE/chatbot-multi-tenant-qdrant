@@ -5,8 +5,8 @@ metadata:
 data:
   config.yaml: |
     tunnel: cde5bebb-4085-4c63-b8f9-bde878565cbb
+    token: eyJhIjoiNWI4ZDNlM2I2ZDE4OThkMmFhYWY3MWRlNmY2ODk2MjEiLCJ0IjoiY2RlNWJlYmItNDA4NS00YzYzLWI4ZjktYmRlODc4NTY1Y2JiIiwicyI6IllUVmhOVGMwTXpndE0ySmlOUzAwWXpJMkxUZ3dNVGt0T1Raa1ptUTFNalk0WkdaaiJ9
     ingress:
-      # Regla específica para tu dominio
       - hostname: orlandokuan.org
         service: http://fastapi-chatbot-service:8000
         originRequest:
@@ -16,7 +16,24 @@ data:
           keepAliveTimeout: 1m30s
           tcpKeepAlive: 30s
           timeout: 1m
-      # Regla catch-all requerida
+      - hostname: jenkins.orlandokuan.org
+        service: http://jenkins-service:8080
+        originRequest:
+          connectTimeout: 30s
+          noTLSVerify: true
+          keepAliveConnections: 100
+          keepAliveTimeout: 1m30s
+          tcpKeepAlive: 30s
+          timeout: 1m
+     - hostname: wsp.orlandokuan.org
+        service: http://whatsapp-webhook-service:8000
+        originRequest:
+          connectTimeout: 30s
+          noTLSVerify: true
+          keepAliveConnections: 100
+          keepAliveTimeout: 1m30s
+          tcpKeepAlive: 30s
+          timeout: 1m
       - service: http_status:404
     metrics: 0.0.0.0:2000
     protocol: quic
@@ -25,3 +42,4 @@ data:
     retries: 5
     grace-period: 30s
     compression: true
+    no-autoupdate: true
