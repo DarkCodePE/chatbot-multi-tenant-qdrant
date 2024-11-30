@@ -26,3 +26,7 @@ starlette
 celery
 passlib[bcrypt]
 pydantic[email]
+langgraph
+psycopg
+psycopg-pool
+langgraph-checkpoint-postgres

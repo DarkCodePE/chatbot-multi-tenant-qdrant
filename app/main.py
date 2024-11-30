@@ -7,7 +7,7 @@ from fastapi import FastAPI, Depends, BackgroundTasks, Form, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse
 
-from app.database import Database
+from app.database import Database, SQLALCHEMY_DATABASE_URL
 import logging
 from sqlalchemy.orm import Session
 from app.database import init_db
@@ -17,6 +17,12 @@ from app.schema.schema import UserResponse, CourseResponse, TopicResponse, Docum
 from app.model import User as UserModel, Course as CourseModel, Topic as TopicModel, Question as QuestionModel, \
     ChatSession, Document as DocumentModel, Course, Topic, ProcessedDocument
 from app.services.services import UserService, CourseService, TopicService, QuestionService
+
+from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.store.postgres import PostgresStore
+from psycopg_pool import ConnectionPool
+from psycopg.rows import dict_row
+
 import asyncio
 import json
 
@@ -26,6 +32,25 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # Inicialización de FastAPI
 app = FastAPI()
 database = Database()
+
+# Configurar el pool y PostgresSaver
+DB_URI = SQLALCHEMY_DATABASE_URL
+connection_kwargs = {
+    "autocommit": True,
+    "prepare_threshold": 0,
+    "row_factory": dict_row
+}
+
+pool = ConnectionPool(
+    conninfo=DB_URI,
+    max_size=10,
+    kwargs=connection_kwargs,
+)
+
+checkpointer = PostgresSaver(pool)
+checkpointer.setup()
+# Inicializar PostgresStore con el mismo pool
+store = PostgresStore(pool)
 
 # Configuración de CORS
 app.add_middleware(
@@ -43,7 +68,7 @@ init_db()
 user_service = UserService(database)
 course_service = CourseService(database)
 topic_service = TopicService(database)
-question_service = QuestionService(database)
+question_service = QuestionService(database, checkpointer, store)
 
 
 # Rutas de la API

@@ -9,7 +9,10 @@ from fastapi import HTTPException, BackgroundTasks
 from googleapiclient.http import MediaIoBaseDownload
 from langchain.schema import Document
 from langchain.schema import HumanMessage
+from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langgraph.constants import START
+from langgraph.graph import StateGraph
 from pydantic import Field
 
 from app.collections import TopicRepository
@@ -22,7 +25,7 @@ from app.retriever.custom_qdrant_retriever import CustomQdrantRetriever, CustomQ
 from app.retriever.document_list_retriever import DocumentListRetriever
 from app.schema.schema import UserLogin, UserResponse, DocumentCreate, CourseAssignment, CourseCreate, CourseResponse, \
     TopicCreate, TopicResponse, Question, Feedback, QuestionV2, DocumentAddToTopic, ChatSessionStart, ChatListResponse, \
-    ChatListItem, UploadDocument, UserCreate, CourseUpdate, UserBase
+    ChatListItem, UploadDocument, UserCreate, CourseUpdate, UserBase, State
 from sqlalchemy.orm import Session
 from app.model import User as UserModel
 from langchain_core.vectorstores import VectorStoreRetriever
@@ -41,6 +44,8 @@ from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 from app.services.util import get_password_hash, verify_password
+from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.store.postgres import PostgresStore
 
 load_dotenv()
 logging.basicConfig(level=logging.DEBUG,
@@ -658,9 +663,10 @@ class TopicService:
 
 
 class QuestionService:
-    def __init__(self, database):
+    def __init__(self, database, checkpointer: PostgresSaver, store: PostgresStore):
         self.database = database
-        self.llm = ChatOpenAI(model_name="gpt-4o-mini", client=openai_client)
+        #self.llm = ChatOpenAI(model_name="gpt-4o-mini", client=openai_client)
+        self.llm = ChatOpenAI(model="gpt-4o-mini")
         self.qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
         self.embeddings = OpenAIEmbeddings()
         self.vector_store = QdrantVectorStore(
@@ -677,8 +683,10 @@ class QuestionService:
             k=5
         )
         self.retriever = CustomQdrantRetriever(config=retriever_config)
+        self.checkpointer = checkpointer
+        self.store = store
 
-    @traceable(run_type="chain")
+    #@traceable(run_type="chain")
     async def process_question(self, question: QuestionV2, db: Session):
         try:
             chat_session = db.query(ChatSession).filter(ChatSession.id == question.chat_session_id).first()
@@ -740,7 +748,7 @@ class QuestionService:
             logging.error(f"Error processing question: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    @traceable(metadata={"model": "gpt-4o-mini"})
+    #@traceable(metadata={"model": "gpt-4o-mini"})
     async def generate_response(self, question: str, chat_session: ChatSession, retriever: BaseRetriever):
         try:
             logging.info(f"Generando respuesta para la pregunta: {question}")
@@ -779,33 +787,33 @@ class QuestionService:
 
             # Combinar el retriever y la cadena de qa
             rag_chain = create_retrieval_chain(history_aware_retriever, qa_chain)
+            logging.info(f"repuesta del app {rag_chain}")
 
-            # Usar RunnableWithMessageHistory
-            conversational_rag_chain = RunnableWithMessageHistory(
-                rag_chain,
-                get_session_history,
-                input_messages_key="input",
-                history_messages_key="chat_history",
-                output_messages_key="answer",
-            )
+            def call_model(state: State):
+                response = rag_chain.invoke(state)
+                return {
+                    "chat_history": [
+                        HumanMessage(state["input"]),
+                        AIMessage(response["answer"]),
+                    ],
+                    "context": response["context"],
+                    "answer": response["answer"],
+                }
 
-            # Invocar la cadena
-            response = await conversational_rag_chain.ainvoke(
-                {"input": question},
-                config={"configurable": {"session_id": chat_session.id}}
-            )
-            # Obtener los documentos recuperados
-            retrieved_docs = response.get('context', [])
+            workflow = StateGraph(state_schema=State)
+            workflow.add_edge(START, "model")
+            workflow.add_node("model", call_model)
 
-            # Logging de los documentos recuperados
-            for i, doc in enumerate(retrieved_docs):
-                logging.info(f"Documento {i + 1}:")
-                logging.info(f"  Contenido (primeros 100 caracteres): {doc.page_content[:100]}")
-                logging.info(f"  Metadata: {doc.metadata}")
-
-            logging.info(f"Respuesta generada: {response['answer']}")
-
-            return response['answer']
+            app = workflow.compile(checkpointer=self.checkpointer)
+            logging.info(f"repuesta del app {app}")
+            config = {
+                "configurable": {
+                    "thread_id": chat_session.id
+                }
+            }
+            result = app.invoke(dict(input=question), config=config)
+            logging.info(f"repuesta del llm, result {result}")
+            return result['answer']
         except Exception as e:
             logging.error(f"Error durante la generación de respuesta: {e}", exc_info=True)
             raise
