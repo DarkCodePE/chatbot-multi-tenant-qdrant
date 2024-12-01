@@ -3,15 +3,18 @@ import io
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import List, Any
+from typing import List, Any, Dict
 from uuid import uuid4
 from fastapi import HTTPException, BackgroundTasks
 from googleapiclient.http import MediaIoBaseDownload
 from langchain.schema import Document
 from langchain.schema import HumanMessage
+from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_core.messages import AIMessage
+from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langgraph.constants import START
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.constants import START, END
 from langgraph.graph import StateGraph
 from pydantic import Field
 
@@ -685,6 +688,139 @@ class QuestionService:
         self.retriever = CustomQdrantRetriever(config=retriever_config)
         self.checkpointer = checkpointer
         self.store = store
+        # Instanciar TavilySearchResults
+        self.web_search_tool = TavilySearchResults(k=3)
+
+    # async def retrieve(self, state: State) -> Dict[str, Any]:
+    #     question = state["input"]
+    #     course_id = state["course_id"]
+    #     filters = Filter(
+    #         must=[
+    #             FieldCondition(key="course_id", match=MatchValue(value=course_id))
+    #         ]
+    #     )
+    #     # Recuperar documentos relevantes de manera asíncrona
+    #     relevant_docs = await self.retriever.ainvoke(question, filters=filters)
+    #     logging.info(f"Retrieved {len(relevant_docs)} relevant documents")
+    #     for doc in relevant_docs:
+    #         logging.info(
+    #             f"Document ID: {doc.metadata.get('id')}, "
+    #             f"Course ID: {doc.metadata.get('course_id')}, "
+    #             f"Topic ID: {doc.metadata.get('topic_id')}, "
+    #             f"Score: {doc.metadata.get('score')}, "
+    #             f"Content preview: {doc.page_content[:100]}..."
+    #         )
+    #     document_list_retriever = DocumentListRetriever(relevant_docs)
+    #
+    #     return {
+    #         "input": question,
+    #         "chat_history": state["chat_history"],
+    #         "documents": document_list_retriever,
+    #         "web_search": "No"
+    #     }
+    def retrieve(self, state: State) -> Dict[str, Any]:
+        question = state["input"]
+        relevant_docs = self.retriever.get_relevant_documents(question)
+        return {
+            "input": question,
+            "chat_history": state["chat_history"],
+            "documents": relevant_docs,
+            "web_search": "No"
+        }
+
+    def grade_documents(self, state: State) -> Dict[str, Any]:
+        question = state["input"]
+        documents = state["documents"]
+
+        filtered_docs = []
+        web_search = "No"
+
+        grade_prompt = ChatPromptTemplate.from_messages([
+            ("system", "Eres un evaluador que determina si un documento es relevante para una pregunta."),
+            ("human",
+             "Pregunta: {question}\n\nDocumento: {document}\n\n¿Es este documento relevante? Responde 'Sí' o 'No'.")
+        ])
+
+        for doc in documents:
+            grade_chain = grade_prompt | self.llm | StrOutputParser()
+            grade = grade_chain.invoke({"question": question, "document": doc.page_content})
+            if "sí" in grade.lower():
+                filtered_docs.append(doc)
+            else:
+                web_search = "Yes"
+
+        return {
+            "input": question,
+            "chat_history": state["chat_history"],
+            "documents": filtered_docs,
+            "web_search": web_search
+        }
+
+    def decide_to_generate(self, state: State) -> str:
+        if state.get("web_search") == "Yes":
+            return "transform_query"
+        else:
+            return "generate"
+
+    def transform_query(self, state: State) -> Dict[str, Any]:
+        question = state["input"]
+
+        rewrite_prompt = ChatPromptTemplate.from_messages([
+            ("system", "Eres un asistente que reformula preguntas para optimizar búsquedas web."),
+            ("human", "Pregunta original: {question}\n\nReformula esta pregunta para optimizarla para la búsqueda web:")
+        ])
+
+        rewrite_chain = rewrite_prompt | self.llm | StrOutputParser()
+        new_question = rewrite_chain.invoke({"question": question})
+
+        return {
+            "input": new_question,
+            "chat_history": state["chat_history"],
+            "documents": state["documents"],
+            "web_search": state["web_search"]
+        }
+
+    def perform_web_search(self, state: State) -> Dict[str, Any]:
+        question = state["input"]
+        search_results = self.web_search_tool.invoke({"query": question})
+        web_results = "\n".join([d["content"] for d in search_results])
+        web_document = Document(page_content=web_results)
+        documents = state["documents"] + [web_document]
+
+        return {
+            "input": question,
+            "chat_history": state["chat_history"],
+            "documents": documents,
+            "web_search": "No"
+        }
+
+    def generate(self, state: State) -> Dict[str, Any]:
+        question = state["input"]
+        documents = state["documents"]
+
+        qa_prompt = ChatPromptTemplate.from_messages([
+            ("system",
+             "Eres un asistente para tareas de preguntas y respuestas. Usa los siguientes documentos para responder la pregunta. Si no sabes la respuesta, indica que no lo sabes. Usa tres oraciones como máximo y mantén la respuesta concisa.\n\n{context}"),
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("human", "{input}"),
+        ])
+
+        qa_chain = create_stuff_documents_chain(self.llm, qa_prompt)
+        rag_chain = create_retrieval_chain(DocumentListRetriever(documents), qa_chain)
+
+        response = rag_chain.invoke({
+            "input": question,
+            "chat_history": state["chat_history"],
+            "context": "\n\n".join([doc.page_content for doc in documents])
+        })
+
+        return {
+            "input": question,
+            "chat_history": state["chat_history"] + [HumanMessage(content=question),
+                                                     AIMessage(content=response["answer"])],
+            "context": response["context"],
+            "answer": response["answer"]
+        }
 
     #@traceable(run_type="chain")
     async def process_question(self, question: QuestionV2, db: Session):
@@ -707,22 +843,22 @@ class QuestionService:
             # Crear un retriever específico para este curso y tema
             #relevant_docs = self.retriever.get_relevant_documents(chat_session.course_id, chat_session.topic_id)
             relevant_docs = await self.retriever.ainvoke(question.text, filters=filters)
-            logging.info(f"Retrieved {len(relevant_docs)} relevant documents")
+            # logging.info(f"Retrieved {len(relevant_docs)} relevant documents")
 
-            for doc in relevant_docs:
-                logging.info(
-                    f"Document ID: {doc.metadata.get('id')}, "
-                    f"Course ID: {doc.metadata.get('course_id')}, "
-                    f"Topic ID: {doc.metadata.get('topic_id')}, "
-                    f"Score: {doc.metadata.get('score')}, "
-                    f"Content preview: {doc.page_content[:100]}..."
-                )
+            # for doc in relevant_docs:
+            #     logging.info(
+            #         f"Document ID: {doc.metadata.get('id')}, "
+            #         f"Course ID: {doc.metadata.get('course_id')}, "
+            #         f"Topic ID: {doc.metadata.get('topic_id')}, "
+            #         f"Score: {doc.metadata.get('score')}, "
+            #         f"Content preview: {doc.page_content[:100]}..."
+            #     )
 
             # Crear un DocumentListRetriever con los documentos relevantes
             document_list_retriever = DocumentListRetriever(relevant_docs)
 
             # Usar los resultados del retriever personalizado para generar la respuesta
-            response = await self.generate_response(question.text, chat_session, document_list_retriever)
+            response = await self.generate_response_agent(question.text, chat_session, document_list_retriever)
 
             # Guardar la pregunta en la base de datos
             db_question = QuestionModel(
@@ -811,12 +947,71 @@ class QuestionService:
                     "thread_id": chat_session.id
                 }
             }
+
             result = app.invoke(dict(input=question), config=config)
             logging.info(f"repuesta del llm, result {result}")
             return result['answer']
         except Exception as e:
             logging.error(f"Error durante la generación de respuesta: {e}", exc_info=True)
             raise
+
+    async def generate_response_agent(self, question: str, chat_session: ChatSession, retriever: BaseRetriever) -> str:
+        try:
+            logging.info(f"Generando respuesta para la pregunta: {question}")
+
+            # Definir el flujo de LangGraph con los nuevos nodos
+            workflow = StateGraph(state_schema=State)
+
+            # Añadir los nodos
+            workflow.add_node("retrieve", self.retrieve)
+            workflow.add_node("grade_documents", self.grade_documents)
+            workflow.add_node("transform_query", self.transform_query)
+            workflow.add_node("perform_web_search", self.perform_web_search)  # Nodo renombrado
+            workflow.add_node("generate", self.generate)
+
+            # Definir las transiciones
+            workflow.add_edge(START, "retrieve")
+            workflow.add_edge("retrieve", "grade_documents")
+            workflow.add_conditional_edges(
+                "grade_documents",
+                self.decide_to_generate,
+                {
+                    "transform_query": "transform_query",
+                    "generate": "generate",
+                }
+            )
+            workflow.add_edge("transform_query", "perform_web_search")
+            workflow.add_edge("perform_web_search", "generate")
+            workflow.add_edge("generate", END)
+
+            # Compilar el grafo con el checkpointer
+            app = workflow.compile(checkpointer=self.checkpointer)
+
+            # Obtener el historial de chat
+            chat_history = get_session_history(chat_session.id).messages
+
+            # Estado inicial
+            state = {
+                "input": question,
+                "chat_history": chat_history,
+                "context": "",
+                "answer": "",
+                "documents": [],
+                "web_search": "No",
+                "course_id": chat_session.course_id
+            }
+            config = {
+                "configurable": {
+                    "thread_id": chat_session.id
+                }
+            }
+            # Ejecutar el grafo
+            result = app.invoke(state, config)
+
+            return result['answer']
+        except Exception as e:
+            logging.error(f"Error durante la generación de respuesta: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Error generating response")
 
     async def start_chat_session(self, session_start: ChatSessionStart, db: Session):
         try:

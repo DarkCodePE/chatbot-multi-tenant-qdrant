@@ -7,6 +7,7 @@ from typing import List, TypedDict, Optional, Any, Dict, Annotated, Sequence
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from langchain_core.documents import Document
 
 
 class UserCreate(BaseModel):
@@ -159,6 +160,9 @@ class ChatListResponse(BaseModel):
 
 class State(TypedDict):
     input: str
-    chat_history: Annotated[Sequence[BaseMessage], add_messages]
+    chat_history: Annotated[List[BaseMessage], "add_messages"]
     context: str
     answer: str
+    documents: Optional[List[Document]]  # Para almacenar documentos recuperados
+    web_search: Optional[str]  # Para decidir si realizar una búsqueda web
+    course_id: str
