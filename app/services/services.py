@@ -720,7 +720,18 @@ class QuestionService:
     #     }
     def retrieve(self, state: State) -> Dict[str, Any]:
         question = state["input"]
-        relevant_docs = self.retriever.get_relevant_documents(question)
+        course_id = state.get("course_id")
+        # Definir filtros si course_id está presente
+        filters = None
+        if course_id:
+            filters = Filter(
+                must=[
+                    FieldCondition(key="course_id", match=MatchValue(value=course_id))
+                ]
+            )
+        logging.debug(f"Aplicando filtros: course_id={course_id}")
+
+        relevant_docs = self.retriever.get_relevant_documents(question, filters=filters)
         return {
             "input": question,
             "chat_history": state["chat_history"],

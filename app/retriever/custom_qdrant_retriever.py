@@ -32,7 +32,7 @@ class CustomQdrantRetriever(BaseRetriever):
         query_vector = self.config.embeddings.embed_query(query)
         # Filtro base para el tipo de documento
         filter_conditions = [FieldCondition(key="type", match=MatchValue(value="document"))]
-        # Añadir filtros adicionales si se proporcionan
+        # Añadir filtros adicionales si se proporcionanGI
         if filters:
             filter_conditions += filters.must if filters.must else []
 
