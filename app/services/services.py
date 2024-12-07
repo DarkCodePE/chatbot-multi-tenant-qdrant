@@ -670,6 +670,7 @@ class QuestionService:
         self.database = database
         #self.llm = ChatOpenAI(model_name="gpt-4o-mini", client=openai_client)
         self.llm = ChatOpenAI(model="gpt-4o-mini")
+        self.llm_judge = ChatOpenAI(model="gpt-4o")
         self.qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
         self.embeddings = OpenAIEmbeddings()
         self.vector_store = QdrantVectorStore(
@@ -753,7 +754,7 @@ class QuestionService:
         ])
 
         for doc in documents:
-            grade_chain = grade_prompt | self.llm | StrOutputParser()
+            grade_chain = grade_prompt | self.llm_judge | StrOutputParser()
             grade = grade_chain.invoke({"question": question, "document": doc.page_content})
             if "sí" in grade.lower():
                 filtered_docs.append(doc)
@@ -840,36 +841,8 @@ class QuestionService:
             if not chat_session:
                 raise HTTPException(status_code=404, detail="Chat session not found")
 
-            # Definir los filtros basados en course_id y topic_id
-            filters = Filter(
-                must=[
-                    FieldCondition(key="course_id", match=MatchValue(value=chat_session.course_id))
-                ]
-            )
-
-            # Registrar los filtros para depuración
-            logging.debug(
-                f"Aplicando filtros: course_id={chat_session.course_id}, topic_id={chat_session.topic_id}")
-
-            # Crear un retriever específico para este curso y tema
-            #relevant_docs = self.retriever.get_relevant_documents(chat_session.course_id, chat_session.topic_id)
-            relevant_docs = await self.retriever.ainvoke(question.text, filters=filters)
-            # logging.info(f"Retrieved {len(relevant_docs)} relevant documents")
-
-            # for doc in relevant_docs:
-            #     logging.info(
-            #         f"Document ID: {doc.metadata.get('id')}, "
-            #         f"Course ID: {doc.metadata.get('course_id')}, "
-            #         f"Topic ID: {doc.metadata.get('topic_id')}, "
-            #         f"Score: {doc.metadata.get('score')}, "
-            #         f"Content preview: {doc.page_content[:100]}..."
-            #     )
-
-            # Crear un DocumentListRetriever con los documentos relevantes
-            document_list_retriever = DocumentListRetriever(relevant_docs)
-
             # Usar los resultados del retriever personalizado para generar la respuesta
-            response = await self.generate_response_agent(question.text, chat_session, document_list_retriever)
+            response = await self.generate_response_agent(question.text, chat_session)
 
             # Guardar la pregunta en la base de datos
             db_question = QuestionModel(
@@ -895,84 +868,12 @@ class QuestionService:
             logging.error(f"Error processing question: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    #@traceable(metadata={"model": "gpt-4o-mini"})
-    async def generate_response(self, question: str, chat_session: ChatSession, retriever: BaseRetriever):
-        try:
-            logging.info(f"Generando respuesta para la pregunta: {question}")
-
-            # Crear el prompt para contextualizar la pregunta
-            contextualize_q_prompt = ChatPromptTemplate.from_messages([
-                ("system", "Given a chat history and the latest user question "
-                           "which might reference context in the chat history, "
-                           "formulate a standalone question which can be understood "
-                           "without the chat history. Do NOT answer the question, "
-                           "just reformulate it if needed and otherwise return it as is."),
-                MessagesPlaceholder(variable_name="chat_history"),
-                ("human", "{input}"),
-            ])
-
-            # Crear un retriever consciente del historial
-            history_aware_retriever = create_history_aware_retriever(
-                self.llm,
-                retriever,
-                contextualize_q_prompt
-            )
-
-            # Crear el prompt para la cadena de preguntas y respuestas
-            qa_prompt = ChatPromptTemplate.from_messages([
-                ("system", "You are an assistant for question-answering tasks. "
-                           "Use the following pieces of retrieved context to answer "
-                           "the question. If you don't know the answer, say that you "
-                           "don't know. Use three sentences maximum and keep the "
-                           "answer concise.\n\n{context}"),
-                MessagesPlaceholder(variable_name="chat_history"),
-                ("human", "{input}"),
-            ])
-
-            # Crear la cadena de documentos
-            qa_chain = create_stuff_documents_chain(self.llm, qa_prompt)
-
-            # Combinar el retriever y la cadena de qa
-            rag_chain = create_retrieval_chain(history_aware_retriever, qa_chain)
-            logging.info(f"repuesta del app {rag_chain}")
-
-            def call_model(state: State):
-                response = rag_chain.invoke(state)
-                return {
-                    "chat_history": [
-                        HumanMessage(state["input"]),
-                        AIMessage(response["answer"]),
-                    ],
-                    "context": response["context"],
-                    "answer": response["answer"],
-                }
-
-            workflow = StateGraph(state_schema=State)
-            workflow.add_edge(START, "model")
-            workflow.add_node("model", call_model)
-
-            app = workflow.compile(checkpointer=self.checkpointer)
-            logging.info(f"repuesta del app {app}")
-            config = {
-                "configurable": {
-                    "thread_id": chat_session.id
-                }
-            }
-
-            result = app.invoke(dict(input=question), config=config)
-            logging.info(f"repuesta del llm, result {result}")
-            return result['answer']
-        except Exception as e:
-            logging.error(f"Error durante la generación de respuesta: {e}", exc_info=True)
-            raise
-
-    async def generate_response_agent(self, question: str, chat_session: ChatSession, retriever: BaseRetriever) -> str:
+    async def generate_response_agent(self, question: str, chat_session: ChatSession) -> str:
         try:
             logging.info(f"Generando respuesta para la pregunta: {question}")
 
             # Definir el flujo de LangGraph con los nuevos nodos
             workflow = StateGraph(state_schema=State)
-
             # Añadir los nodos
             workflow.add_node("retrieve", self.retrieve)
             workflow.add_node("grade_documents", self.grade_documents)

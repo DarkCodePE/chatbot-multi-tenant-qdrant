@@ -9,6 +9,10 @@ from dotenv import load_dotenv
 from psycopg2 import connect, sql
 
 from app.model import User, Course, Topic, Question, Feedback, ChatSession
+from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.store.postgres import PostgresStore
+from psycopg_pool import ConnectionPool
+from psycopg.rows import dict_row
 import logging
 
 from app.services.util import get_password_hash
@@ -37,6 +41,7 @@ POSTGRES_PASSWORD = os.getenv("DB_PASSWORD")
 DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", 5))
 DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", 10))
 DB_POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", 30))
+
 
 # Primero, nos conectamos al servidor PostgreSQL sin especificar la base de datos
 def create_database_if_not_exists():
@@ -80,6 +85,24 @@ engine = create_engine(
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Configurar el pool y PostgresSaver
+connection_kwargs = {
+    "autocommit": True,
+    "prepare_threshold": 0,
+    "row_factory": dict_row
+}
+
+pool = ConnectionPool(
+    conninfo=SQLALCHEMY_DATABASE_URL,
+    max_size=10,
+    kwargs=connection_kwargs,
+)
+
+checkpointer = PostgresSaver(pool)
+checkpointer.setup()
+# Inicializar PostgresStore con el mismo pool
+store = PostgresStore(pool)
 
 
 def init_db():
@@ -195,6 +218,7 @@ class Database:
         db.commit()
         db.refresh(db_question)
         return db_question
+
     #update topic
     def update_topic(self, db: Session, topic_id: str, topic: Topic):
         db_topic = self.get_topic_by_id(db, topic_id)
