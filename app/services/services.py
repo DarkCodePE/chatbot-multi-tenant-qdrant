@@ -15,9 +15,10 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.constants import START, END
+from langgraph.errors import NodeInterrupt
 from langgraph.graph import StateGraph
 from pydantic import Field
-
+from IPython.display import Image, display
 from app.collections import TopicRepository
 from app.generator.rag import RAG, TopicInfo
 import logging
@@ -806,6 +807,36 @@ class QuestionService:
             "web_search": "No"
         }
 
+    def check_ambiguity(self, state: State) -> State:
+        question = state["input"]
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "Eres un sistema que determina si la pregunta del usuario es ambigua."),
+            ("human", f"La pregunta del usuario es: '{question}'. "
+                      f"Responde 'AMBIGUO' si es ambigua y 'CLARO' si está clara.")
+        ])
+        result = (prompt | self.llm_judge | StrOutputParser()).invoke({})
+
+        if "AMBIGUO" in result.upper():
+            # Si es ambigua, lanzamos interrupción
+            raise NodeInterrupt("La pregunta es ambigua, se requiere feedback humano.")
+        # Si no es ambigua, seguimos normal
+        return state
+
+    def merge_feedback(self, state: State) -> State:
+        # Si user_feedback no está vacío, lo fusionamos con el input original
+        # Podrías definir la lógica de fusión:
+        # Por ejemplo, simplemente:
+        if state["user_feedback"]:
+            # Suponiendo que la retroalimentación sea una explicación de cómo aclarar la pregunta,
+            # Podríamos sobrescribir el input con la retroalimentación directamente, o combinarlos.
+            # Aquí un ejemplo simple:
+            # "El usuario originalmente preguntó X, feedback: Y. Nueva pregunta: Y"
+            # Pero para simplificar, digamos que user_feedback es ya la versión clara de la pregunta.
+            state["input"] = state["user_feedback"]
+            # Opcional: puedes limpiar user_feedback después
+            # state["user_feedback"] = ""
+        return state
+
     def generate(self, state: State) -> Dict[str, Any]:
         question = state["input"]
         documents = state["documents"]
@@ -875,6 +906,8 @@ class QuestionService:
             # Definir el flujo de LangGraph con los nuevos nodos
             workflow = StateGraph(state_schema=State)
             # Añadir los nodos
+            workflow.add_node("check_ambiguity", self.check_ambiguity)
+            workflow.add_node("merge_feedback", self.merge_feedback)
             workflow.add_node("retrieve", self.retrieve)
             workflow.add_node("grade_documents", self.grade_documents)
             workflow.add_node("transform_query", self.transform_query)
@@ -882,7 +915,9 @@ class QuestionService:
             workflow.add_node("generate", self.generate)
 
             # Definir las transiciones
-            workflow.add_edge(START, "retrieve")
+            workflow.add_edge(START, "check_ambiguity")
+            workflow.add_edge("check_ambiguity", "merge_feedback")
+            workflow.add_edge("merge_feedback", "retrieve")
             workflow.add_edge("retrieve", "grade_documents")
             workflow.add_conditional_edges(
                 "grade_documents",
@@ -898,7 +933,8 @@ class QuestionService:
 
             # Compilar el grafo con el checkpointer
             app = workflow.compile(checkpointer=self.checkpointer)
-
+            # Graficar el flijo
+            display(Image(app.get_graph().draw_mermaid_png()))
             # Obtener el historial de chat
             chat_history = get_session_history(chat_session.id).messages
 
@@ -910,7 +946,8 @@ class QuestionService:
                 "answer": "",
                 "documents": [],
                 "web_search": "No",
-                "course_id": chat_session.course_id
+                "course_id": chat_session.course_id,
+                "user_feedback": ""
             }
             config = {
                 "configurable": {
@@ -921,6 +958,16 @@ class QuestionService:
             result = app.invoke(state, config)
 
             return result['answer']
+        except NodeInterrupt as e:
+            # Aquí se detectó ambigüedad
+            # Detenemos y pedimos al usuario aclaración
+            # Luego de obtener clarificación:
+            # graph.update_state(config, {"user_feedback": "Pregunta ya aclarada"}, as_node="human_input")
+            # Y continuar:
+            # result = app.invoke(None, config)
+            #
+            # Pero esto lo harías en tu lógica externa
+            raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             logging.error(f"Error durante la generación de respuesta: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail="Error generating response")

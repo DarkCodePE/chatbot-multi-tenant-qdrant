@@ -166,3 +166,4 @@ class State(TypedDict):
     documents: Optional[List[Document]]  # Para almacenar documentos recuperados
     web_search: Optional[str]  # Para decidir si realizar una búsqueda web
     course_id: str
+    user_feedback: str  # Almacena el feedback del usuario cuando la pregunta es ambigua

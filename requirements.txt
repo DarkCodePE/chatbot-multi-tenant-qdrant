@@ -30,3 +30,4 @@ langgraph
 psycopg
 psycopg-pool
 langgraph-checkpoint-postgres
+IPython
