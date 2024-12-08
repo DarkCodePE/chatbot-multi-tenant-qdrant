@@ -1,18 +1,16 @@
 # tasks.py
-from langsmith.wrappers import wrap_openai
-from celery import states
-from app.database import SessionLocal
+import asyncio
+
 from app.celery_app import app
-from sqlalchemy.orm import Session
 from langchain_core.pydantic_v1 import BaseModel, Field
+
+from app.generator.rag import RAG
 from app.schema.schema import TopicCreate
-from app.services.services import TopicService, QuestionService
+from app.services.services import TopicService, QuestionService, CourseService
 import openai
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.schema import HumanMessage, SystemMessage
-from langchain.output_parsers import PydanticOutputParser
+from app.model import User as UserModel, Course
 from langchain_core.output_parsers import StrOutputParser
 from app.database import SessionLocal
 import logging
@@ -93,3 +91,67 @@ def generate_and_update_title(self, topic_id: str, question: str):
     finally:
         db.close()
         logger.info("Database connection closed")
+
+
+@app.task(name='app.event.tasks.sync_user_documents')
+def sync_user_documents(user_id: str):
+    logger.info(f"Starting document synchronization for user: {user_id}")
+    db = SessionLocal()
+    try:
+        user = db.query(UserModel).filter(UserModel.id == user_id).first()
+        if not user:
+            raise ValueError("User not found")
+
+        # Inicializar una nueva instancia de RAG para esta tarea
+        rag = RAG()
+        rag.initialize()  # Asumiendo que initialize() es síncrono, si no, usar run_until_complete
+        for course in user.courses:
+            if course.google_drive_folder:
+                logger.info(f"Synchronizing documents for course: {course.id}")
+                success, new_processed_docs = rag.process_google_drive_folder(course.google_drive_folder_id, course.id,
+                                                                              None)
+                if success:
+                    # Guardar los nuevos documentos procesados en la base de datos
+                    for doc in new_processed_docs:
+                        db.add(doc)
+                    db.commit()
+                    logging.info(f"Updated documents for course {course.id}")
+                else:
+                    logging.warning(f"Failed to synchronize documents for course {course.id}")
+
+        logger.info(f"Document synchronization completed for user: {user_id}")
+        return {"status": "success", "message": "Documents synchronized successfully"}
+    except Exception as exc:
+        logger.exception(f"Error synchronizing documents for user {user_id}: {str(exc)}")
+        raise exc
+    finally:
+        db.close()
+
+
+@app.task(name="app.event.tasks.sync_all_courses")
+def sync_all_courses():
+    # Ejecutar la función asíncrona dentro del bucle de eventos
+    return asyncio.run(sync_all_courses_async())
+
+
+async def sync_all_courses_async():
+    db = SessionLocal()
+    try:
+        # Todas las cursos
+        courses = db.query(Course).all()
+        # Inicializar una nueva instancia de RAG para esta tarea
+        rag = RAG()
+        await rag.initialize()  # Asumiendo que tienes una versión asíncrona
+
+        for course in courses:
+            if course.google_drive_folder_id:
+                logger.info(f"Synchronizing documents for course: {course.id}")
+                await rag.process_google_drive_folder(course.google_drive_folder_id, course.id, None)
+
+        logger.info("Document synchronization completed for all courses")
+        return {"status": "success", "message": "Documents synchronized successfully"}
+    except Exception as exc:
+        logger.exception(f"Error synchronizing documents for all courses: {str(exc)}")
+        raise exc
+    finally:
+        db.close()

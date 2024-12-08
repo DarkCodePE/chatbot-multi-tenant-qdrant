@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chatbot-config
+data:
+  LOG_LEVEL: "INFO"
+  WORKERS: "4"
+  COLLECTION_NAME: "CHATBOT-RAG-7"
+  # Añade aquí otras configuraciones necesarias

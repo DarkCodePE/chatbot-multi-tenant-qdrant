@@ -2,13 +2,16 @@ from celery import Celery
 import os
 import logging
 
+from celery.schedules import crontab
 from celery.signals import after_setup_logger
 
+#redis_host = os.getenv('REDIS_HOST', 'localhost')
+#logging.info("REDIS_HOST %s", redis_host)
 redis_host = os.getenv('REDIS_HOST', 'localhost')
 redis_port = int(os.getenv('REDIS_PORT', 6379))
 redis_password = os.getenv('REDIS_PASSWORD')
 redis_url = f'redis://{redis_host}:{redis_port}/0'
-
+logging.info(redis_url)
 app = Celery('app', broker=redis_url, backend=redis_url)
 
 app.conf.update(
@@ -30,6 +33,12 @@ app.conf.broker_transport_options = {
 app.conf.result_backend_transport_options = {
     'socket_timeout': 30,
     'socket_connect_timeout': 30,
+}
+app.conf.beat_schedule = {
+    'sync-all-courses-every-day': {
+        'task': 'tasks.sync_all_courses',
+        'schedule': crontab(hour=2, minute=0),  # Ejecutar todos los días a las 2:00 AM
+    },
 }
 
 app.autodiscover_tasks(lambda: ['app.event.tasks'])

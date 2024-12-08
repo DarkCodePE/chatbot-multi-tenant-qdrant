@@ -1,0 +1,85 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_IMAGE = 'orlandogtp/fastapi-chatbot'
+        DOCKER_TAG = "${BUILD_NUMBER}"
+        DOCKER_CREDENTIALS_ID = 'docker-credentials'  // ID de Docker Hub en Jenkins
+        GIT_REPO = 'https://github.com/DarkCodePE/chatbot-multi-tenant-qdrant.git'
+        GIT_BRANCH = 'master'
+    }
+
+    stages {
+        stage('Clone Repository') {
+            steps {
+                deleteDir()  // Limpia el workspace de Jenkins
+                git branch: env.GIT_BRANCH, url: env.GIT_REPO
+            }
+        }
+
+        stage('Inject Google Credentials') {
+            steps {
+                withCredentials([file(credentialsId: 'google-credentials', variable: 'GOOGLE_CREDENTIALS')]) {
+                    sh '''
+                        echo "Inyectando credenciales de Google..."
+                        mkdir -p config
+                        cp $GOOGLE_CREDENTIALS config/google-credentials.json
+                    '''
+                }
+            }
+        }
+
+        stage('Diagnóstico') {
+            steps {
+                sh '''
+                    echo "Verificando ambiente..."
+                    docker --version || echo "ERROR: Docker no está disponible en este entorno"
+                    kubectl version --client || echo "ERROR: kubectl no está disponible en este entorno"
+                    if [ ! -f Dockerfile ]; then
+                        echo "ERROR: Dockerfile no encontrado"
+                        exit 1
+                    fi
+                '''
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    sh """
+                        docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
+                        docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest
+                    """
+                }
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: DOCKER_CREDENTIALS_ID, usernameVariable: 'DOCKER_USR', passwordVariable: 'DOCKER_PSW')]) {
+                    sh '''
+                        echo "${DOCKER_PSW}" | docker login -u "${DOCKER_USR}" --password-stdin
+                        docker push ${DOCKER_IMAGE}:${DOCKER_TAG}
+                        docker push ${DOCKER_IMAGE}:latest
+                        docker logout
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Pipeline ejecutado exitosamente'
+        }
+        failure {
+            echo 'Pipeline falló'
+        }
+        always {
+            sh '''
+                docker system prune -f || true
+            '''
+            cleanWs()  // Limpia el workspace solo si tienes instalado el plugin Workspace Cleanup
+        }
+    }
+}

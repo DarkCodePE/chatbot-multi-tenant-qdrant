@@ -21,7 +21,7 @@ class CourseDocumentManager:
     def _initialize_drive_service(self):
         credentials = service_account.Credentials.from_service_account_file(
             'path/to/service_account.json',
-            scopes=['https://www.googleapis.com/auth/drive.readonly']
+            scopes=['https://www.googleapis.com/auth/drive']
         )
         return build('drive', 'v3', credentials=credentials)
 

@@ -1,0 +1,184 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: celery-worker
+  template:
+    metadata:
+      labels:
+        app: celery-worker
+    spec:
+      containers:
+      - name: celery-worker
+        image: orlandogtp/fastapi-chatbot:latest   # Asegúrate de usar la misma imagen que tu aplicación FastAPI
+        command: ["celery"]
+        args:
+          - "-A"
+          - "app.celery_app"
+          - "worker"
+          - "--loglevel=INFO"
+          - "-P"
+          - "solo"
+          - "--without-gossip"
+          - "--without-mingle"
+          - "--without-heartbeat"
+          - "--max-tasks-per-child=1000"
+          - "--max-memory-per-child=512000"
+        lifecycle:
+          preStop:
+            exec:
+              command: [ "/bin/sh", "-c", "celery -A app.celery_app control shutdown && sleep 10" ]
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "512Mi"
+          limits:
+            cpu: "1"
+            memory: "1Gi"
+        readinessProbe:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - celery -A app.celery_app inspect ping -d celery@$HOSTNAME
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          successThreshold: 1
+          failureThreshold: 3
+        livenessProbe:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - celery -A app.celery_app inspect ping -d celery@$HOSTNAME
+          initialDelaySeconds: 60
+          periodSeconds: 60
+          timeoutSeconds: 10
+          failureThreshold: 3
+        env:
+        - name: C_FORCE_ROOT
+          value: "true"
+        - name: CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP
+          value: "true"
+        - name: CELERY_BROKER_HEARTBEAT
+          value: "60"
+        - name: CELERY_BROKER_CONNECTION_MAX_RETRIES
+          value: "5"
+        - name: CELERY_TASK_SOFT_TIME_LIMIT
+          value: "300"
+        - name: CELERY_TASK_TIME_LIMIT
+          value: "600"
+        - name: CELERY_WORKER_MAX_TASKS_PER_CHILD
+          value: "1000"
+        - name: CELERY_WORKER_MAX_MEMORY_PER_CHILD
+          value: "512000"
+        - name: REDIS_HOST
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: REDIS_PORT
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: REDIS_PASSWORD
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: DB_NAME
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: DB_PASSWORD
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: DB_HOST
+        - name: DB_PORT
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: DB_PORT
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: OPENAI_API_KEY
+        - name: TAVILY_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: TAVILY_API_KEY
+        - name: CONFIG_FILE
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: CONFIG_FILE
+        - name: DOC_PATH
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: DOC_PATH
+        - name: LANGCHAIN_PROJECT
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: LANGCHAIN_PROJECT
+        - name: LANGCHAIN_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: LANGCHAIN_API_KEY
+        - name: LANGCHAIN_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: LANGCHAIN_ENDPOINT
+        - name: LANGCHAIN_TRACING_V2
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: LANGCHAIN_TRACING_V2
+        - name: QDRANT_URL
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: QDRANT_URL
+        - name: QDRANT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: QDRANT_API_KEY
+        - name: COLLECTION_NAME
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: COLLECTION_NAME
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: GOOGLE_APPLICATION_CREDENTIALS
+        - name: USER_AGENT
+          valueFrom:
+            secretKeyRef:
+              name: chatbot-secrets
+              key: USER_AGENT

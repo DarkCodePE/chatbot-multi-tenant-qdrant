@@ -12,11 +12,13 @@ from dotenv import load_dotenv
 from langchain.schema import Document
 from pydantic import BaseModel, ConfigDict
 from langchain_openai import OpenAIEmbeddings
+
+from app.model import ProcessedDocument
 from app.schema.schema import TopicInfo
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 # Configuration
 load_dotenv()
@@ -47,7 +49,7 @@ class TopicRepository:
 
         credentials = service_account.Credentials.from_service_account_file(
             credentials_path,
-            scopes=['https://www.googleapis.com/auth/drive.readonly']
+            scopes=['https://www.googleapis.com/auth/drive']
         )
         return build('drive', 'v3', credentials=credentials)
 
@@ -100,6 +102,18 @@ class TopicRepository:
         except Exception as e:
             logging.error(f"Error al añadir documento: {str(e)}")
             raise
+
+    def create_folder(self, folder_name):
+        try:
+            file_metadata = {
+                'name': folder_name,
+                'mimeType': 'application/vnd.google-apps.folder'
+            }
+            file = self.drive_service.files().create(body=file_metadata, fields='id').execute()
+            return file.get('id')
+        except Exception as e:
+            logging.error(f"Error creating folder in Google Drive: {str(e)}")
+            return None
 
     def get_folder_id(self, folder_name):
         try:
@@ -202,125 +216,190 @@ class TopicRepository:
             logging.error(f"Error inesperado al acceder a la carpeta: {error}")
             return None
 
-    async def process_google_drive_documents(self, folder_id: str, course_id: str, topic_id: str):
+    async def process_google_drive_documents(self, folder_id: str, course_id: str, processed_docs: list):
         try:
-            # Verificar permisos antes de procesar
-            # permissions = self.check_folder_permissions(folder_id)
-            # if permissions is None:
-            #     logging.error(f"No se pudo acceder a los permisos de la carpeta {folder_id}. Abortando procesamiento.")
-            #     return False
-            # Verificar si la carpeta es accesible
-            # access = self.list_accessible_folders()
-            # logging.info(f"Carpetas accesibles: {access}")
-
-            logging.info(f"Iniciando procesamiento de documentos para curso {course_id} y tópico {topic_id}")
-            logging.info(f"Buscando archivos en la carpeta de Google Drive con ID: {folder_id}")
-
             results = self.drive_service.files().list(
                 q=f"'{folder_id}' in parents",
                 fields="files(id, name, mimeType, createdTime, modifiedTime)"
             ).execute()
             files = results.get('files', [])
 
-            logging.info(f"Archivos encontrados en la carpeta '{folder_id}':")
-            for file in files:
-                logging.info(f"- {file['name']} (ID: {file['id']}, Tipo: {file['mimeType']})")
+            processed_file_ids = {doc.google_file_id: doc for doc in processed_docs} if processed_docs else {}
+
+            logging.info(f"Archivos encontrados en la carpeta '{folder_id}': {len(files)}")
 
             total_files = len(files)
             processed_files = 0
+            updated_files = 0
             failed_files = 0
-
-            logging.info(f"Iniciando procesamiento de {total_files} archivos")
+            new_processed_docs = []
 
             for file in files:
                 try:
                     file_id = file['id']
                     file_name = file.get('name', 'Unknown')
                     file_mime = file.get('mimeType', 'Unknown')
-                    logging.info(f"Procesando archivo: {file_name} (ID: {file_id}, MIME: {file_mime})")
+                    modified_time = datetime.fromisoformat(file['modifiedTime'].rstrip('Z'))
 
-                    request = self.drive_service.files().get_media(fileId=file_id)
-                    file_content = io.BytesIO()
-                    downloader = MediaIoBaseDownload(file_content, request)
-                    done = False
+                    if file_id in processed_file_ids:
+                        if modified_time <= processed_file_ids[file_id].last_modified:
+                            logging.info(f"Archivo {file_name} no ha sido modificado. Omitiendo.")
+                            continue
+                        logging.info(f"Actualizando archivo modificado: {file_name}")
+                        updated_files += 1
+                    else:
+                        logging.info(f"Procesando nuevo archivo: {file_name}")
 
-                    try:
-                        while not done:
-                            status, done = downloader.next_chunk()
-                            if status:
-                                logging.info(f"Descarga {int(status.progress() * 100)}% completa para {file_name}")
-                    except Exception as download_error:
-                        logging.error(f"Error al descargar el archivo {file_name}: {str(download_error)}")
+                    text_content = await self.download_and_process_file(file_id, file_name, file_mime)
+                    if text_content is None:
+                        failed_files += 1
                         continue
 
-                    logging.info(f"Archivo descargado: {file_name}")
-                    file_content.seek(0)  # Rewind the file pointer to the beginning
-
-                    if file_mime == 'application/pdf':
-                        try:
-                            pdf_reader = PdfReader(file_content)
-                            logging.info(f"PDF {file_name} tiene {len(pdf_reader.pages)} páginas")
-                            text_content = ""
-                            for i, page in enumerate(pdf_reader.pages):
-                                page_text = page.extract_text()
-                                logging.info(
-                                    f"Página {i + 1} de {file_name}: primeros 100 caracteres: {page_text[:100]}")
-                                text_content += page_text
-                        except Exception as pdf_error:
-                            logging.error(f"Error al procesar el PDF {file_name}: {str(pdf_error)}")
-                            continue
-                    else:
-                        try:
-                            text_content = file_content.getvalue().decode('utf-8', errors='ignore')
-                            logging.info(f"Archivo no-PDF {file_name}: primeros 100 caracteres: {text_content[:100]}")
-                        except Exception as text_error:
-                            logging.error(f"Error al decodificar el archivo {file_name}: {str(text_error)}")
-                            continue
-
-                    # Limitar el contenido si es demasiado largo
-                    max_content_length = 10000  # Ajusta este valor según sea necesario
-                    if len(text_content) > max_content_length:
-                        text_content = text_content[:max_content_length]
-                    # Crear embedding y almacenar en Qdrant
                     vector = await self.embeddings.aembed_query(text_content)
 
+                    point_id = str(uuid4())
                     self.qdrant_client.upsert(
                         collection_name=self.collection_name,
                         points=[models.PointStruct(
-                            id=str(uuid4()),
+                            id=point_id,
                             vector=vector,
                             payload={
                                 "course_id": course_id,
-                                "topic_id": topic_id,
                                 "content": text_content,
                                 "metadata": {
-                                    "name": file.get('name'),
-                                    "mimeType": file.get('mimeType'),
-                                    "createdTime": file.get('createdTime'),
-                                    "modifiedTime": file.get('modifiedTime')
+                                    "name": file_name,
+                                    "mimeType": file_mime,
+                                    "createdTime": file['createdTime'],
+                                    "modifiedTime": file['modifiedTime'],
+                                    "google_file_id": file_id
                                 },
                                 "type": "document"
                             }
                         )]
                     )
+
+                    # Crear o actualizar el registro de ProcessedDocument
+                    new_processed_doc = ProcessedDocument(
+                        course_id=course_id,
+                        google_file_id=file_id,
+                        file_name=file_name,
+                        last_modified=modified_time,
+                        qdrant_point_id=point_id
+                    )
+                    new_processed_docs.append(new_processed_doc)
+
                     processed_files += 1
-                    logging.info(f"Procesado archivo {processed_files}/{total_files}: {file.get('name')}")
-                    logging.info(f"text_contentxxx: {text_content[:100]}")
+                    logging.info(f"Procesado archivo {processed_files}/{total_files}: {file_name}")
+
                 except Exception as e:
                     logging.error(f"Error al procesar archivo {file.get('name')}: {str(e)}")
+                    failed_files += 1
 
             success_rate = (processed_files / total_files) * 100 if total_files > 0 else 0
 
-            logging.info(f"Procesamiento completado para curso {course_id} y tópico {topic_id}:")
+            logging.info(f"Procesamiento completado para curso {course_id}")
             logging.info(f"Total de archivos: {total_files}")
-            logging.info(f"Archivos procesados exitosamente: {processed_files}")
+            logging.info(f"Archivos nuevos procesados: {processed_files - updated_files}")
+            logging.info(f"Archivos actualizados: {updated_files}")
             logging.info(f"Archivos fallidos: {failed_files}")
             logging.info(f"Tasa de éxito: {success_rate:.2f}%")
 
-            return processed_files > 0
+            return True, new_processed_docs
+
         except Exception as e:
             logging.error(f"Error procesando documentos de Google Drive: {str(e)}")
-            return False
+            return False, []
+
+    async def upload_document_to_drive(self, course_id: str, folder_id: str, file_name: str, file_content: bytes, mime_type: str):
+        try:
+            # Obtener el ID de la carpeta del curso
+            if not folder_id:
+                raise ValueError(f"No se encontró la carpeta para el curso {course_id}")
+
+            file_metadata = {
+                'name': file_name,
+                'parents': [folder_id]
+            }
+            media = MediaIoBaseUpload(io.BytesIO(file_content), mimetype=mime_type, resumable=True)
+            file = self.drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id,name,mimeType,createdTime,modifiedTime'
+            ).execute()
+
+            logging.info(f"Archivo subido: {file.get('name')} (ID: {file.get('id')})")
+
+            # Procesar el contenido del archivo para Qdrant
+            text_content = TextExtractor.extract_text_content(file_content, mime_type)
+            vector = await self.embeddings.aembed_query(text_content)
+
+            point_id = str(uuid4())
+            self.qdrant_client.upsert(
+                collection_name=self.collection_name,
+                points=[models.PointStruct(
+                    id=point_id,
+                    vector=vector,
+                    payload={
+                        "course_id": course_id,
+                        "content": text_content,
+                        "metadata": {
+                            "name": file.get('name'),
+                            "mimeType": file.get('mimeType'),
+                            "createdTime": file.get('createdTime'),
+                            "modifiedTime": file.get('modifiedTime'),
+                            "google_file_id": file.get('id')
+                        },
+                        "type": "document"
+                    }
+                )]
+            )
+
+            # Crear un nuevo ProcessedDocument
+            new_processed_doc = ProcessedDocument(
+                course_id=course_id,
+                google_file_id=file.get('id'),
+                file_name=file.get('name'),
+                last_modified=datetime.fromisoformat(file.get('modifiedTime').rstrip('Z')),
+                qdrant_point_id=point_id  # Se llenará después de procesar el documento
+            )
+
+            return new_processed_doc
+
+        except Exception as e:
+            logging.error(f"Error al subir el documento a Google Drive: {str(e)}")
+            raise
+
+    async def download_and_process_file(self, file_id: str, file_name: str, file_mime: str):
+        try:
+            request = self.drive_service.files().get_media(fileId=file_id)
+            file_content = io.BytesIO()
+            downloader = MediaIoBaseDownload(file_content, request)
+            done = False
+
+            while not done:
+                status, done = downloader.next_chunk()
+                if status:
+                    logging.info(f"Descarga {int(status.progress() * 100)}% completa para {file_name}")
+
+            file_content.seek(0)
+
+            if file_mime == 'application/pdf':
+                pdf_reader = PdfReader(file_content)
+                text_content = ""
+                for page in pdf_reader.pages:
+                    text_content += page.extract_text()
+            else:
+                text_content = file_content.getvalue().decode('utf-8', errors='ignore')
+
+            max_content_length = 10000
+            if len(text_content) > max_content_length:
+                text_content = text_content[:max_content_length]
+
+            return text_content
+
+        except Exception as e:
+            logging.error(f"Error al descargar y procesar el archivo {file_name}: {str(e)}")
+            return None
 
     async def search_documents(self, query: str, course_id: str = None, topic_id: str = None, k: int = 5):
         query_vector = await self.embeddings.aembed_query(query)
@@ -411,3 +490,33 @@ class TopicRepository:
         except Exception as e:
             logging.error(f"Error al eliminar documento: {str(e)}")
             return False
+
+
+class TextExtractor:
+    @staticmethod
+    def extract_text_content(file_content: bytes, mime_type: str) -> str:
+        try:
+            if mime_type == 'application/pdf':
+                return TextExtractor._extract_from_pdf(file_content)
+            elif mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+                return TextExtractor._extract_from_docx(file_content)
+            elif mime_type == 'text/plain':
+                return file_content.decode('utf-8')
+            else:
+                raise ValueError(f"Unsupported file type: {mime_type}")
+        except Exception as e:
+            logging.error(f"Error extracting text content: {str(e)}")
+            raise
+
+    @staticmethod
+    def _extract_from_pdf(file_content: bytes) -> str:
+        pdf = PdfReader(io.BytesIO(file_content))
+        text = ""
+        for page in pdf.pages:
+            text += page.extract_text() + "\n"
+        return text
+
+    @staticmethod
+    def _extract_from_docx(file_content: bytes) -> str:
+        doc = Document(io.BytesIO(file_content))
+        return "\n".join([paragraph.text for paragraph in doc.paragraphs])

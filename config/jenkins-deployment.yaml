@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jenkins
+  labels:
+    app: jenkins
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jenkins
+  template:
+    metadata:
+      labels:
+        app: jenkins
+    spec:
+      serviceAccountName: jenkins  # Asigna el ServiceAccount
+      tolerations:
+        - key: "jenkins"
+          operator: "Equal"
+          value: "true"
+          effect: "NoSchedule"
+      nodeSelector:
+        role: jenkins
+      securityContext:  # Mover fsGroup aquí
+        fsGroup: 1000
+      containers:
+        - name: jenkins
+          image: orlandogtp/jenkins-with-docker-kubectl  # Asegúrate de que esta imagen es correcta
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 50000
+              name: jnlp
+          env:
+            - name: JENKINS_OPTS
+              value: "--prefix=/jenkins"
+            - name: JAVA_OPTS
+              value: >-
+                -Dhudson.footerURL=https://orlandokuan.org
+                -Djenkins.install.runSetupWizard=false
+                -Xmx2g
+          volumeMounts:
+            - name: jenkins-home
+              mountPath: /var/jenkins_home
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+            - name: kube-config
+              mountPath: /var/jenkins_home/.kube
+              readOnly: true
+          securityContext:
+            runAsUser: 0
+            capabilities:
+              add:
+                - NET_ADMIN
+                - NET_RAW
+      volumes:
+        - name: jenkins-home
+          persistentVolumeClaim:
+            claimName: jenkins-pvc
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+        - name: kube-config
+          configMap:
+            name: jenkins-kubeconfig
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jenkins-service
+  labels:
+    app: jenkins
+spec:
+  selector:
+    app: jenkins
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+    - name: jnlp
+      protocol: TCP
+      port: 50000
+      targetPort: 50000
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jenkins-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi

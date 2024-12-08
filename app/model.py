@@ -16,11 +16,14 @@ course_topic = Table('course_topic', Base.metadata,
                      Column('topic_id', String, ForeignKey('topics.id'))
                      )
 
+
 class User(Base):
     __tablename__ = "users"
 
     id = Column(String, primary_key=True, index=True, default=lambda: str(uuid4()))
     name = Column(String, index=True)
+    email = Column(String, unique=True, index=True)  # Nuevo campo para el correo electrónico
+    hashed_password = Column(String)  # Nuevo campo para la contraseña hasheada
     group_id = Column(String, index=True)
     session_id = Column(String, unique=True, index=True, default=lambda: str(uuid4()))
     chat_status = Column(String)  # Nuevo campo para indicar el estado de chat
@@ -34,11 +37,13 @@ class User(Base):
     def __repr__(self):
         return f"<User(id={self.id}, name={self.name}, group_id={self.group_id})>"
 
+
 class Course(Base):
     __tablename__ = "courses"
 
     id = Column(String, primary_key=True, index=True, default=lambda: str(uuid4()))
     name = Column(String, index=True)
+    google_drive_folder_id = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -49,6 +54,23 @@ class Course(Base):
 
     def __repr__(self):
         return f"<Course(id={self.id}, name={self.name})>"
+
+
+class ProcessedDocument(Base):
+    __tablename__ = "processed_documents"
+
+    id = Column(String, primary_key=True, index=True, default=lambda: str(uuid4()))
+    course_id = Column(String, ForeignKey('courses.id'), index=True)
+    google_file_id = Column(String, unique=True, index=True)
+    file_name = Column(String)
+    last_modified = Column(DateTime)
+    qdrant_point_id = Column(String, unique=True)  # ID in Qdrant
+
+    course = relationship("Course", back_populates="processed_documents")
+
+
+Course.processed_documents = relationship("ProcessedDocument", back_populates="course")
+
 
 class Topic(Base):
     __tablename__ = "topics"
@@ -68,6 +90,7 @@ class Topic(Base):
 
     def __repr__(self):
         return f"<Topic(id={self.id}, name={self.name})>"
+
 
 class Question(Base):
     __tablename__ = "questions"
@@ -89,6 +112,7 @@ class Question(Base):
     def __repr__(self):
         return f"<Question(id={self.id}, user_id={self.user_id}, course_id={self.course_id}, topic_id={self.topic_id})>"
 
+
 class Document(Base):
     __tablename__ = "documents"
 
@@ -106,6 +130,7 @@ class Document(Base):
 
     def __repr__(self):
         return f"<Document(id={self.id}, title={self.title}, type={self.type})>"
+
 
 class ChatSession(Base):
     __tablename__ = "chat_sessions"
@@ -126,6 +151,7 @@ class ChatSession(Base):
 
     def __repr__(self):
         return f"<ChatSession(id={self.id}, user_id={self.user_id}, status={self.status})>"
+
 
 class Feedback(Base):
     __tablename__ = "feedbacks"

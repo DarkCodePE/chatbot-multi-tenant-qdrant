@@ -9,7 +9,13 @@ from dotenv import load_dotenv
 from psycopg2 import connect, sql
 
 from app.model import User, Course, Topic, Question, Feedback, ChatSession
+from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.store.postgres import PostgresStore
+from psycopg_pool import ConnectionPool
+from psycopg.rows import dict_row
 import logging
+
+from app.services.util import get_password_hash
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -30,6 +36,11 @@ POSTGRES_PORT = os.getenv("DB_PORT", "5432")
 POSTGRES_DB = os.getenv("DB_NAME")
 POSTGRES_USER = os.getenv("DB_USER")
 POSTGRES_PASSWORD = os.getenv("DB_PASSWORD")
+
+# Leer los parámetros del pool desde las variables de entorno
+DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", 5))
+DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", 10))
+DB_POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", 30))
 
 
 # Primero, nos conectamos al servidor PostgreSQL sin especificar la base de datos
@@ -63,10 +74,35 @@ create_database_if_not_exists()
 
 # URL de la base de datos
 SQLALCHEMY_DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
-print(SQLALCHEMY_DATABASE_URL)
+#print(SQLALCHEMY_DATABASE_URL)
 # Configuración del engine y creación de la sesión
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    pool_size=DB_POOL_SIZE,
+    max_overflow=DB_MAX_OVERFLOW,
+    pool_timeout=DB_POOL_TIMEOUT,
+    pool_pre_ping=True  # Opcional: ayuda a mantener las conexiones activas
+)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Configurar el pool y PostgresSaver
+connection_kwargs = {
+    "autocommit": True,
+    "prepare_threshold": 0,
+    "row_factory": dict_row
+}
+
+pool = ConnectionPool(
+    conninfo=SQLALCHEMY_DATABASE_URL,
+    max_size=10,
+    kwargs=connection_kwargs,
+)
+
+checkpointer = PostgresSaver(pool)
+checkpointer.setup()
+# Inicializar PostgresStore con el mismo pool
+store = PostgresStore(pool)
 
 
 def init_db():
@@ -87,17 +123,19 @@ class Database:
             db.close()
 
     def create_user(self, db: Session, user: User):
-        db_user = User(id=user.id, name=user.name, session_id=user.session_id)
-        db.add(db_user)
+        db.add(user)
         db.commit()
-        db.refresh(db_user)
-        return db_user
+        db.refresh(user)
+        return user
 
     def get_user_by_id(self, db: Session, user_id: str):
         return db.query(User).filter(User.id == user_id).first()
 
     def get_user_by_name(self, db: Session, name: str):
         return db.query(User).filter(User.name == name).first()
+
+    def get_user_by_email(self, db: Session, email: str):
+        return db.query(User).filter(User.email == email).first()
 
     def create_course(self, db: Session, course: Course):
         db_course = Course(id=course.id, name=course.name)
@@ -180,6 +218,7 @@ class Database:
         db.commit()
         db.refresh(db_question)
         return db_question
+
     #update topic
     def update_topic(self, db: Session, topic_id: str, topic: Topic):
         db_topic = self.get_topic_by_id(db, topic_id)
