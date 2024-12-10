@@ -666,6 +666,32 @@ class TopicService:
         ]
 
 
+# Ejemplo de funciones condicionales:
+def check_relevance_first(state: State) -> str:
+    docs = state["documents"] or []
+    logging.info(f"check_relevance_first: docs={docs}")
+    if len(docs) == 0:
+        return "detect_clarification"
+    else:
+        return "generate"
+
+
+def check_relevance_second(state: State) -> str:
+    docs = state["documents"] or []
+    if len(docs) == 0:
+        return "ask_web_search"
+    else:
+        return "transform_query"
+
+
+def check_user_choice(state: State) -> str:
+    choice = (state.get("user_choice") or "").lower()
+    if choice == "yes":
+        return "perform_web_search"
+    else:
+        return "no_results"
+
+
 class QuestionService:
     def __init__(self, database, checkpointer: PostgresSaver, store: PostgresStore):
         self.database = database
@@ -693,33 +719,6 @@ class QuestionService:
         # Instanciar TavilySearchResults
         self.web_search_tool = TavilySearchResults(k=3)
 
-    # async def retrieve(self, state: State) -> Dict[str, Any]:
-    #     question = state["input"]
-    #     course_id = state["course_id"]
-    #     filters = Filter(
-    #         must=[
-    #             FieldCondition(key="course_id", match=MatchValue(value=course_id))
-    #         ]
-    #     )
-    #     # Recuperar documentos relevantes de manera asíncrona
-    #     relevant_docs = await self.retriever.ainvoke(question, filters=filters)
-    #     logging.info(f"Retrieved {len(relevant_docs)} relevant documents")
-    #     for doc in relevant_docs:
-    #         logging.info(
-    #             f"Document ID: {doc.metadata.get('id')}, "
-    #             f"Course ID: {doc.metadata.get('course_id')}, "
-    #             f"Topic ID: {doc.metadata.get('topic_id')}, "
-    #             f"Score: {doc.metadata.get('score')}, "
-    #             f"Content preview: {doc.page_content[:100]}..."
-    #         )
-    #     document_list_retriever = DocumentListRetriever(relevant_docs)
-    #
-    #     return {
-    #         "input": question,
-    #         "chat_history": state["chat_history"],
-    #         "documents": document_list_retriever,
-    #         "web_search": "No"
-    #     }
     def retrieve(self, state: State) -> Dict[str, Any]:
         question = state["input"]
         course_id = state.get("course_id")
@@ -746,7 +745,7 @@ class QuestionService:
         documents = state["documents"]
 
         filtered_docs = []
-        web_search = "No"
+        #web_search = "No"
 
         grade_prompt = ChatPromptTemplate.from_messages([
             ("system", "Eres un evaluador que determina si un documento es relevante para una pregunta."),
@@ -759,21 +758,46 @@ class QuestionService:
             grade = grade_chain.invoke({"question": question, "document": doc.page_content})
             if "sí" in grade.lower():
                 filtered_docs.append(doc)
-            else:
-                web_search = "Yes"
 
         return {
             "input": question,
             "chat_history": state["chat_history"],
             "documents": filtered_docs,
-            "web_search": web_search
         }
 
-    def decide_to_generate(self, state: State) -> str:
-        if state.get("web_search") == "Yes":
-            return "transform_query"
-        else:
-            return "generate"
+    def detect_clarification(self, state: State) -> State:
+        raise NodeInterrupt("No se encontraron documentos. Por favor, aclara tu pregunta.")
+
+    def propose_clarification(self, state: State) -> Dict[str, Any]:
+        question = state["input"]
+        documents = state["documents"]
+
+        # Crear un contexto a partir de los documentos cargados
+        context = "\n".join([doc.page_content for doc in documents])
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "Eres un asistente que ayuda a los usuarios a formular preguntas más claras."),
+            ("human", f"La pregunta del usuario es: '{question}'. "
+                      f"Contexto: '{context}'. "
+                      f"Proporciona tres sugerencias de preguntas más claras y relevantes.")
+        ])
+        result = (prompt | self.llm | StrOutputParser()).invoke({})
+        # Actualizar el estado con las sugerencias de preguntas
+        result_split = result.split("\n")  # Asumiendo que las sugerencias están separadas por saltos de línea
+        logging.info("Resultado de las sugerencias de preguntas: %s", result_split)
+        # Lanzar NodeInterrupt pidiendo aclaración
+        return {
+            "input": question,
+            "documents": documents,
+            "suggestions": result_split,
+        }
+
+    def ask_web_search(self, state: State) -> State:
+        raise NodeInterrupt("No se encontraron resultados tras la aclaración. ¿Desea buscar en la web? (yes/no)")
+
+    def no_results(self, state: State) -> State:
+        state["answer"] = "Lo siento, no se encontraron resultados relevantes."
+        return state
 
     def transform_query(self, state: State) -> Dict[str, Any]:
         question = state["input"]
@@ -832,7 +856,9 @@ class QuestionService:
             # Aquí un ejemplo simple:
             # "El usuario originalmente preguntó X, feedback: Y. Nueva pregunta: Y"
             # Pero para simplificar, digamos que user_feedback es ya la versión clara de la pregunta.
-            state["input"] = state["user_feedback"]
+            original_input = state["input"]
+            feedback = state["user_feedback"]
+            state["input"] = f"El usuario originalmente preguntó: {original_input}, feedback: {feedback}"
             # Opcional: puedes limpiar user_feedback después
             # state["user_feedback"] = ""
         return state
@@ -856,7 +882,7 @@ class QuestionService:
             "chat_history": state["chat_history"],
             "context": "\n\n".join([doc.page_content for doc in documents])
         })
-
+        logging.info(f"response LLM ={response}")
         return {
             "input": question,
             "chat_history": state["chat_history"] + [HumanMessage(content=question),
@@ -906,38 +932,81 @@ class QuestionService:
             # Definir el flujo de LangGraph con los nuevos nodos
             workflow = StateGraph(state_schema=State)
             # Añadir los nodos
-            workflow.add_node("check_ambiguity", self.check_ambiguity)
-            workflow.add_node("merge_feedback", self.merge_feedback)
             workflow.add_node("retrieve", self.retrieve)
             workflow.add_node("grade_documents", self.grade_documents)
-            workflow.add_node("transform_query", self.transform_query)
-            workflow.add_node("perform_web_search", self.perform_web_search)  # Nodo renombrado
+            workflow.add_node("detect_clarification", self.detect_clarification)
+            workflow.add_node("propose_clarification", self.propose_clarification)
+            workflow.add_node("merge_feedback", self.merge_feedback)
+            #workflow.add_node("ask_web_search", self.ask_web_search)
+            #workflow.add_node("no_results", self.no_results)
+            #workflow.add_node("transform_query", self.transform_query)
+            #workflow.add_node("perform_web_search", self.perform_web_search)
             workflow.add_node("generate", self.generate)
 
             # Definir las transiciones
-            workflow.add_edge(START, "check_ambiguity")
-            workflow.add_edge("check_ambiguity", "merge_feedback")
-            workflow.add_edge("merge_feedback", "retrieve")
+            workflow.add_edge(START, "retrieve")
             workflow.add_edge("retrieve", "grade_documents")
+            # Primera decisión
             workflow.add_conditional_edges(
                 "grade_documents",
-                self.decide_to_generate,
+                check_relevance_first,
                 {
-                    "transform_query": "transform_query",
-                    "generate": "generate",
+                    "detect_clarification": "detect_clarification",
+                    "generate": "generate"
                 }
             )
-            workflow.add_edge("transform_query", "perform_web_search")
-            workflow.add_edge("perform_web_search", "generate")
-            workflow.add_edge("generate", END)
+            # Si no hay docs en la primera vez: propose_clarification -> merge_feedback -> retrieve -> grade_documents segunda vez
+            workflow.add_edge("detect_clarification", "propose_clarification")
+            workflow.add_edge("propose_clarification", "merge_feedback")
+            workflow.add_edge("merge_feedback", "retrieve")
+            workflow.add_edge("retrieve", "grade_documents")
 
+            # # Segunda decisión
+            # workflow.add_conditional_edges(
+            #     "grade_documents",
+            #     check_relevance_second,
+            #     {
+            #         "ask_web_search": "ask_web_search",
+            #         "transform_query": "transform_query"
+            #     }
+            # )
+            # # Nodo combinado para decisión y transformación
+            # # Si no hay docs en segunda vez: ask_web_search -> user elige
+            # workflow.add_conditional_edges(
+            #     "ask_web_search",
+            #     check_user_choice,
+            #     {
+            #         "transform_query": "transform_query",
+            #         "no_results": "no_results"
+            #     }
+            # )
+            # workflow.add_edge("transform_query", "perform_web_search")
+            # workflow.add_edge("perform_web_search", "generate")
+            workflow.add_edge("generate", END)
+            # workflow.add_edge("no_results", END)
             # Compilar el grafo con el checkpointer
             app = workflow.compile(checkpointer=self.checkpointer)
             # Graficar el flijo
             display(Image(app.get_graph().draw_mermaid_png()))
-            # Obtener el historial de chat
-            chat_history = get_session_history(chat_session.id).messages
-
+            # Obtener el historial de chat || sematic serach
+            config = {
+                "configurable": {
+                    "thread_id": chat_session.id
+                }
+            }
+            #chat_history = app.get_state_history(config)
+            #chat_history = get_session_history(chat_session.id).messages
+            # checkpoint = self.checkpointer.get(config)
+            # history = checkpoint["channel_values"]["chat_history"]
+            # history = [
+            #     {
+            #         "author": "human" if isinstance(msg, HumanMessage) else "ai",
+            #         "content": msg.content,
+            #     }
+            #     for msg in history
+            # ]
+            # logging.info(f"Generando history: {history}")
+            chat_history = []
             # Estado inicial
             state = {
                 "input": question,
@@ -947,16 +1016,15 @@ class QuestionService:
                 "documents": [],
                 "web_search": "No",
                 "course_id": chat_session.course_id,
-                "user_feedback": ""
+                "user_feedback": "",
+                "user_choice": "",
+                "suggestions": []
             }
-            config = {
-                "configurable": {
-                    "thread_id": chat_session.id
-                }
-            }
+
             # Ejecutar el grafo
             result = app.invoke(state, config)
-
+            #loggin result
+            logging.info("Resultado de la generación de respuesta: %s", result)
             return result['answer']
         except NodeInterrupt as e:
             # Aquí se detectó ambigüedad

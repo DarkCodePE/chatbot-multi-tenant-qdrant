@@ -167,3 +167,5 @@ class State(TypedDict):
     web_search: Optional[str]  # Para decidir si realizar una búsqueda web
     course_id: str
     user_feedback: str  # Almacena el feedback del usuario cuando la pregunta es ambigua
+    user_choice: str  # Para guardar la respuesta del usuario sobre web search ("yes" o "no")
+    suggestions: Optional[List[str]]  # Sugerencias para preguntas
